@@ -76,31 +76,6 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Install Phoenix deps
-        if: env.USE_PHOENIX == 'true'
-        run: pip install jax==0.8.1 jaxlib==0.8.1 dm-haiku==0.0.17 scipy tabulate
-
-      - name: Cache Phoenix ranker artifacts
-        id: phoenix-cache
-        if: env.USE_PHOENIX == 'true'
-        uses: actions/cache@v4
-        with:
-          path: x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
-          key: phoenix-ranker-v1
-
-      - name: Fetch Phoenix ranker artifacts
-        if: env.USE_PHOENIX == 'true' && steps.phoenix-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p /tmp/phoenix /tmp/phoenix-artifacts
-          curl -sL -o /tmp/phoenix/oss-phoenix-artifacts.zip \
-            "https://media.githubusercontent.com/media/xai-org/x-algorithm/main/phoenix/artifacts/oss-phoenix-artifacts.zip"
-          unzip -o /tmp/phoenix/oss-phoenix-artifacts.zip \
-            "oss-phoenix-artifacts/ranker/*" -d /tmp/phoenix-artifacts/
-          mkdir -p x-algorithm/phoenix/artifacts/oss-phoenix-artifacts
-          cp -r /tmp/phoenix-artifacts/oss-phoenix-artifacts/ranker \
-            x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
-          du -sh x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
-
       # state.json is git-ignored, so pull the previous run's copy back down.
       - name: Restore state.json from last run
         env:
@@ -128,6 +103,40 @@ jobs:
           GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
           EOF
 
+      # Cheap scan before the heavy steps: only bother with Phoenix + the model
+      # (and posting) when there is genuinely something fresh to respond to.
+      - name: Preflight (fresh candidates?)
+        id: preflight
+        run: |
+          export PYTHONPATH="$PWD"
+          python preflight.py
+          echo "has_candidates=$(cat preflight.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Phoenix deps
+        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true'
+        run: pip install jax==0.8.1 jaxlib==0.8.1 dm-haiku==0.0.17 scipy tabulate
+
+      - name: Cache Phoenix ranker artifacts
+        id: phoenix-cache
+        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true'
+        uses: actions/cache@v4
+        with:
+          path: x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
+          key: phoenix-ranker-v1
+
+      - name: Fetch Phoenix ranker artifacts
+        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true' && steps.phoenix-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/phoenix /tmp/phoenix-artifacts
+          curl -sL -o /tmp/phoenix/oss-phoenix-artifacts.zip \
+            "https://media.githubusercontent.com/media/xai-org/x-algorithm/main/phoenix/artifacts/oss-phoenix-artifacts.zip"
+          unzip -o /tmp/phoenix/oss-phoenix-artifacts.zip \
+            "oss-phoenix-artifacts/ranker/*" -d /tmp/phoenix-artifacts/
+          mkdir -p x-algorithm/phoenix/artifacts/oss-phoenix-artifacts
+          cp -r /tmp/phoenix-artifacts/oss-phoenix-artifacts/ranker \
+            x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
+          du -sh x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
+
       - name: Resolve dry-run flag
         id: flags
         run: |
@@ -140,12 +149,17 @@ jobs:
           echo "dry=$dry" >> "$GITHUB_OUTPUT"
 
       - name: Run autopilot
+        if: steps.preflight.outputs.has_candidates == '1'
         run: |
           export PYTHONPATH="$PWD"
           if [ "$USE_PHOENIX" = "true" ]; then
             export PYTHONPATH="$PYTHONPATH:$PWD/x-algorithm/phoenix"
           fi
           python engager.py --once ${{ steps.flags.outputs.dry }}
+
+      - name: No fresh candidates — skipping
+        if: steps.preflight.outputs.has_candidates != '1'
+        run: echo "No fresh tweets from followed accounts; skipping model load and posting."
 
       - name: Sanitize state.json for artifact
         # Strip authored draft text (reply/quote) before upload — dedup only needs

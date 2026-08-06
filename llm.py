@@ -264,8 +264,11 @@ def score_tweet(text: str) -> int | None:
 def score_candidates(candidates: list, budget: int = 12) -> list:
     """LLM-score candidate tweets (1-10, keep >=5), paced for Groq rate limits.
 
-    Returns a list of (score, tweet) tuples sorted best-first, with ties broken by
-    the Phoenix predicted weighted engagement already attached to each tweet."""
+    Returns a list of (score, tweet) tuples sorted best-first. When Phoenix
+    predicted engagement is available it is the PRIMARY ranking signal (the whole
+    point is picking tweets likely to get engagement); the LLM score is the
+    quality gate (>=5) and tiebreaker. Tweets with zero predicted engagement sort
+    last, so the model's prediction can't be overridden by LLM taste alone."""
     scored = []
     for t in candidates[:budget]:
         s = score_tweet(t["full_text"])
@@ -275,7 +278,7 @@ def score_candidates(candidates: list, budget: int = 12) -> list:
             log.info("  scored %d (phoenix %.3f): @%s: %.80s",
                      s, pw, t["author_screen_name"], t["full_text"])
         time.sleep(0.4)
-    scored.sort(key=lambda x: (x[0], x[1].get("phoenix", {}).get("weighted", 0.0)),
+    scored.sort(key=lambda x: (x[1].get("phoenix", {}).get("weighted", 0.0), x[0]),
                 reverse=True)
     return scored
 

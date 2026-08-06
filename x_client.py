@@ -33,6 +33,7 @@ QUERY_IDS = {
     "UserTweets": "eoJ5zbv51Z_KVl81v9PmLQ",
     "UserTweetsAndReplies": "wc5DRl4VaW5lSqJ8YbftZQ",
     "TweetDetail": "559hs_YZNV4IgA3Z6zIIuw",
+    "TweetResultByRestId": "LkId5Akr61BS6BmOIcffRg",
     "NotificationsTimeline": "2FvqvnMOYuY5EEh--vxdFQ",
     "Bookmarks": "aqjes8lRHRFG0HUglVTfNg",
     "CreateBookmark": "aoDbu3RHznuiSkQ9aNM67Q",
@@ -145,10 +146,12 @@ class XClient:
         resp.raise_for_status()
         return resp.json()
 
-    def _graphql_get(self, query_id, operation_name, variables, features=None):
+    def _graphql_get(self, query_id, operation_name, variables, features=None, field_toggles=None):
         params = {"variables": json.dumps(variables)}
         if features:
             params["features"] = json.dumps(features)
+        if field_toggles:
+            params["fieldToggles"] = json.dumps(field_toggles)
         url = f"{GRAPHQL_BASE}/{query_id}/{operation_name}"
         path = f"/i/api/graphql/{query_id}/{operation_name}"
         headers = self._attach_txid({}, "GET", path)
@@ -156,7 +159,7 @@ class XClient:
         if resp.status_code == 429:
             print("  Rate limited. Waiting 60s...")
             time.sleep(60)
-            return self._graphql_get(query_id, operation_name, variables, features)
+            return self._graphql_get(query_id, operation_name, variables, features, field_toggles)
         resp.raise_for_status()
         return resp.json()
 
@@ -642,6 +645,39 @@ class XClient:
 
         data = self._graphql_get(QUERY_IDS["UserTweets"], "UserTweets", variables, features=FEATURES)
         return self._extract_tweets_from_timeline(data, ["data", "user", "result", "timeline", "timeline"])
+
+    def get_article_body(self, tweet_id: str) -> str:
+        """Fetch an X Article's body for a tweet via TweetResultByRestId.
+
+        The UserTweets timeline query omits the article blocks, so article tweets
+        seen as candidates need a follow-up fetch keyed on the tweet's rest id.
+        Returns the joined block text, or "" when the tweet has no article."""
+        variables = {
+            "tweetId": str(tweet_id),
+            "includePromotedContent": True,
+            "withBirdwatchNotes": True,
+            "withVoice": True,
+            "withCommunity": True,
+        }
+        field_toggles = {
+            "withArticleRichContentState": True,
+            "withArticlePlainText": False,
+            "withArticleSummaryText": True,
+            "withArticleVoiceOver": True,
+        }
+        data = self._graphql_get(QUERY_IDS["TweetResultByRestId"],
+                                 "TweetResultByRestId", variables, features=FEATURES,
+                                 field_toggles=field_toggles)
+        try:
+            result = data["data"]["tweetResult"]["result"]
+            blocks = (result.get("article", {})
+                      .get("article_results", {})
+                      .get("result", {})
+                      .get("content_state", {})
+                      .get("blocks", []))
+        except (KeyError, TypeError):
+            return ""
+        return "\n".join(b.get("text", "") for b in blocks if b.get("text")).strip()
 
     def get_tweet_conversation(self, tweet_id):
         variables = {

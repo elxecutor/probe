@@ -1,0 +1,9 @@
+# Core autopilot deps
+requests>=2.31.0
+python-dotenv>=1.0.0
+beautifulsoup4>=4.12.0     # x_txid.py (parses X homepage for the TID key)
+numpy>=1.24.0              # phoenix_scorer.py
+
+# Phoenix ranker (optional but recommended): the model lives in x-algorithm/phoenix
+# and needs jax, dm-haiku, scipy, tabulate. These are installed from that project's
+# own dependency set (uv.lock) rather than pinned here.

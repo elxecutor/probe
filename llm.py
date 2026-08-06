@@ -207,31 +207,36 @@ def summarize_article(article_text: str) -> str:
         return ""
 
 
-def article_context(cache: dict, urls: list, tweet_text: str, tweet_id: str) -> str:
-    """Return a cached or freshly-computed summary for a tweet's linked article.
+def article_context(cache: dict, urls: list, tweet_text: str, tweet_id: str,
+                    inline_article: str = "") -> str:
+    """Return a cached or freshly-computed summary for a tweet's article.
 
-    Only reads articles for thin-caption tweets (the URL dominates), so rich
-    captions don't trigger expensive fetches. Returns "" when nothing qualifies
-    or fetching/summarizing fails (silent fallback to text-only commentary)."""
-    if not urls:
-        return ""
-    # Thin-caption heuristic: strip URLs from the text; if the remainder is short
-    # (or empty), the link IS the content and worth reading.
-    caption = re.sub(r"https?://\S+", "", tweet_text).strip()
-    if len(caption) >= 40:
+    When `inline_article` is provided (X Article body already extracted from the
+    GraphQL response), it is summarized directly — no network fetch, and it
+    bypasses the thin-caption gate. Otherwise only reads articles for thin-caption
+    tweets (the URL dominates), so rich captions don't trigger expensive fetches.
+    Returns "" when nothing qualifies or fetching/summarizing fails (silent
+    fallback to text-only commentary)."""
+    if not inline_article and not urls:
         return ""
     cache.setdefault("article_summaries", {})
-    url = urls[0]["expanded_url"]
-    entry = cache["article_summaries"].get(url)
+    if inline_article:
+        key = f"inline:{tweet_id}"
+    else:
+        caption = re.sub(r"https?://\S+", "", tweet_text).strip()
+        if len(caption) >= 40:
+            return ""
+        key = urls[0]["expanded_url"]
+    entry = cache["article_summaries"].get(key)
     if entry is not None:
         return entry.get("summary", "") if isinstance(entry, dict) else ""
-    text = fetch_article_text(url)
+    text = inline_article or fetch_article_text(key)
     summary = summarize_article(text) if text else ""
-    cache["article_summaries"][url] = {"summary": summary, "ts": time.time(),
-                                       "url": url, "tweet_id": str(tweet_id)}
+    cache["article_summaries"][key] = {"summary": summary, "ts": time.time(),
+                                       "url": key, "tweet_id": str(tweet_id)}
     if summary:
          log.info("  summarized article for tweet %s (%s): %.120s",
-                  tweet_id, url[:50], summary)
+                  tweet_id, key[:50], summary)
     return summary
 
 

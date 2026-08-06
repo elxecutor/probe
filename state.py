@@ -23,6 +23,7 @@ _DEFAULT_STATE = {
     "replies_today": 0,
     "last_content_day": "",
     "content_today": 0,
+    "next_engine": "reply",
 }
 
 

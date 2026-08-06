@@ -32,19 +32,16 @@ def run_quote_cycle(client: XClient, state: dict, dry_run: bool, max_quotes: int
         log.info("No new candidate tweets to quote.")
         return 0
 
-    SCORE_BUDGET = 12
     ranked = phoenix_scorer.rank_candidates(client, state, candidates)
     if ranked and "phoenix" in ranked[0]:
-        scorable = [t for t in ranked
-                    if t["phoenix"]["weighted"] > 0 or llm.is_niche(t["full_text"])]
+        selected = ranked[:max_quotes]
     else:
         ranked = sorted(candidates, key=_engagement, reverse=True)
-        scorable = [t for t in ranked if _engagement(t) > 0 or llm.is_niche(t["full_text"])]
-
-    selected = llm.score_candidates(scorable, SCORE_BUDGET)[:max_quotes]
+        selected = ranked[:max_quotes]
 
     posted = 0
-    for score, t in selected:
+    for t in selected:
+        score = t.get("phoenix", {}).get("weighted", 0.0)
         media_url = ""
         if t.get("media"):
             media_url = t["media"][0].get("url", "")
@@ -72,7 +69,7 @@ def run_quote_cycle(client: XClient, state: dict, dry_run: bool, max_quotes: int
             mark_quoted(state, t["id_str"], score, quote, dry_run)
             save_state(state)
             continue
-        log.info("  QUOTE of @%s (score %d, quality %s): %s",
+        log.info("  QUOTE of @%s (phoenix %.3f, quality %s): %s",
                  t["author_screen_name"], score, algo.get("quality_score"), quote)
         if dry_run:
             log.info("    [DRY RUN] would quote-post")

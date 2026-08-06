@@ -31,25 +31,24 @@ def run_reply_cycle(client: XClient, state: dict, dry_run: bool, max_replies: in
         log.info("No new candidate tweets to reply to.")
         return 0
 
-    # Pre-filter: rank by Phoenix-predicted engagement when available, else engagement
-    # heuristic, then score only the top SCORE_BUDGET with the LLM (Groq rate limits).
-    SCORE_BUDGET = 12
+    # Rank strictly by Phoenix-predicted engagement (no LLM scoring — Groq quota
+    # stays reserved for content generation + safety checks). Fall back to the raw
+    # engagement heuristic only when the ranker is unavailable.
     def _engagement(t):
         return t["favorite_count"] + 3 * t["retweet_count"] + 2 * t["reply_count"]
 
     ranked = phoenix_scorer.rank_candidates(client, state, candidates)
     if ranked and "phoenix" in ranked[0]:
         log.info("  ranked by Phoenix predicted engagement")
-        scorable = [t for t in ranked if t["phoenix"]["weighted"] > 0 or llm.is_niche(t["full_text"])]
+        selected = ranked[:max_replies]
     else:
         log.info("  ranked by raw engagement heuristic")
         ranked = sorted(candidates, key=_engagement, reverse=True)
-        scorable = [t for t in ranked if _engagement(t) > 0 or llm.is_niche(t["full_text"])]
-
-    selected = llm.score_candidates(scorable, SCORE_BUDGET)[:max_replies]
+        selected = ranked[:max_replies]
 
     posted = 0
-    for score, t in selected:
+    for t in selected:
+        score = t.get("phoenix", {}).get("weighted", 0.0)
         author = following.get(t["author_id"], {})
         bio = author.get("description", "")
         name = author.get("name", t["author_screen_name"])
@@ -72,7 +71,7 @@ def run_reply_cycle(client: XClient, state: dict, dry_run: bool, max_replies: in
             mark_replied(state, t["id_str"], score, reply, dry_run)
             save_state(state)
             continue
-        log.info("  REPLY to @%s (score %d, algo rank %s): %s",
+        log.info("  REPLY to @%s (phoenix %.3f, algo rank %s): %s",
                  t["author_screen_name"], score, rank.get("score"), reply)
         if dry_run:
             log.info("    [DRY RUN] would post")

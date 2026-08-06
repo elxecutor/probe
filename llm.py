@@ -230,57 +230,9 @@ def article_context(cache: dict, urls: list, tweet_text: str, tweet_id: str) -> 
     cache["article_summaries"][url] = {"summary": summary, "ts": time.time(),
                                        "url": url, "tweet_id": str(tweet_id)}
     if summary:
-        log.info("  summarized article for tweet %s (%s): %.120s",
-                 tweet_id, url[:50], summary)
+         log.info("  summarized article for tweet %s (%s): %.120s",
+                  tweet_id, url[:50], summary)
     return summary
-
-
-def _parse_score(text: str) -> int | None:
-    match = re.search(r"\b([0-9]|10)\b", text)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
-
-
-def score_tweet(text: str) -> int | None:
-    """Rate 1-10 how reply-worthy + niche-relevant a tweet is for an EEE student."""
-    system = (
-        "You score tweets for whether an EEE (electrical & electronic engineering) student "
-        "should reply to them. Reply-worthy = opinionated, asks a question, shares a build, "
-        "or has a specific technical hook a student can add real value to. Not reply-worthy = "
-        "pure news headline, pure promo, vague fluff, or outside the niche entirely. "
-        "Return ONLY a single integer 1-10. 1 = skip, 10 = must reply."
-    )
-    try:
-        raw = _chat(system, text[:600], max_tokens=10, temperature=0.1)
-    except RuntimeError:
-        return None
-    return _parse_score(raw)
-
-
-def score_candidates(candidates: list, budget: int = 12) -> list:
-    """LLM-score candidate tweets (1-10, keep >=5), paced for Groq rate limits.
-
-    Returns a list of (score, tweet) tuples sorted best-first. When Phoenix
-    predicted engagement is available it is the PRIMARY ranking signal (the whole
-    point is picking tweets likely to get engagement); the LLM score is the
-    quality gate (>=5) and tiebreaker. Tweets with zero predicted engagement sort
-    last, so the model's prediction can't be overridden by LLM taste alone."""
-    scored = []
-    for t in candidates[:budget]:
-        s = score_tweet(t["full_text"])
-        if s and s >= 5:
-            pw = t.get("phoenix", {}).get("weighted", 0.0)
-            scored.append((s, t))
-            log.info("  scored %d (phoenix %.3f): @%s: %.80s",
-                     s, pw, t["author_screen_name"], t["full_text"])
-        time.sleep(0.4)
-    scored.sort(key=lambda x: (x[1].get("phoenix", {}).get("weighted", 0.0), x[0]),
-                reverse=True)
-    return scored
 
 
 def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_desc: str = "", article: str = "") -> str:

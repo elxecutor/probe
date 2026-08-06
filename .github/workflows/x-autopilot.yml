@@ -47,7 +47,7 @@ on:
 env:
   # Set to "false" once you want scheduled runs to post. Manual runs can override
   # per-run via the dry_run input.
-  DRY_RUN: "true"
+  DRY_RUN: "false"
   # Phoenix ranker in CI. Off = engagement heuristic (fast, no model download).
   USE_PHOENIX: "true"
 

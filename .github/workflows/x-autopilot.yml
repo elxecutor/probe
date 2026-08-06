@@ -34,10 +34,12 @@ name: elxecutor autopilot
 
 on:
   schedule:
-    # Every 2h, UTC. Engager posts ONE tweet per run, alternating between a reply
-    # and a quote; daily caps in state.json (20 replies / 6 quotes) keep volume in
-    # check. Tune the cron freely.
-    - cron: "0 */2 * * *"
+    # Every 30 min, UTC. Engager posts ONE tweet per run, alternating between a
+    # reply and a quote; daily caps in state.json (20 replies / 6 quotes) keep
+    # volume in check. Preflight makes quiet runs cheap (~1 min, API-only), so a
+    # tight cadence just picks up fresh tweets faster — the model still only
+    # loads when there's something to rank. Tune the cron freely.
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

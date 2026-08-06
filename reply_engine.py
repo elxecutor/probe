@@ -9,7 +9,8 @@ import time
 from x_client import XClient
 import llm
 import phoenix_scorer
-from state import (load_state, save_state, already_replied, mark_replied)
+from state import (load_state, save_state, already_replied, mark_replied,
+                   seen_tweet_id, mark_seen, is_new_tweet)
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +118,10 @@ def _gather_followed_candidates(client: XClient, following: dict, state: dict) -
     Fetching each account's own timeline (instead of the flooded home timeline)
     keeps the candidate pool spread across all followed accounts, so a prolific
     account like hackaday can't dominate every cycle.
+
+    A per-account heartbeat (highest tweet id already seen, persisted in
+    state.json) means only tweets newer than the last sighting qualify — old
+    tweets never resurface even if the account goes quiet.
     """
     accounts = list(following.values())
     random.shuffle(accounts)
@@ -132,6 +137,8 @@ def _gather_followed_candidates(client: XClient, following: dict, state: dict) -
         for t in tweets:
             if t["author_screen_name"] == "elxecutor":
                 continue
+            if not is_new_tweet(state, u["id_str"], t["id_str"]):
+                continue
             if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
                 continue
             if already_replied(state, t["id_str"]):
@@ -139,6 +146,8 @@ def _gather_followed_candidates(client: XClient, following: dict, state: dict) -
             candidates.append(t)
             if len(candidates) >= MAX_CANDIDATES:
                 break
+        for t in tweets:
+            mark_seen(state, u["id_str"], t["id_str"])
         time.sleep(0.8)
         if len(candidates) >= MAX_CANDIDATES:
             break

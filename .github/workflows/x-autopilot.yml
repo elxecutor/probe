@@ -110,8 +110,8 @@ jobs:
           if [ -n "$run_id" ]; then
             gh run download "$run_id" -n autopilot-state --dir ./dl >/dev/null 2>&1 || true
           fi
-          if [ -f ./dl/autopilot-state/state.json ]; then
-            cp ./dl/autopilot-state/state.json ./state.json
+          if [ -f ./dl/state.json ]; then
+            cp ./dl/state.json ./state.json
             echo "restored state.json ($(wc -c < state.json) bytes)"
           else
             echo "no previous state (fresh run)"

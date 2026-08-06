@@ -24,6 +24,9 @@ _DEFAULT_STATE = {
     "last_content_day": "",
     "content_today": 0,
     "next_engine": "reply",
+    # Per-account heartbeat: account_id -> highest tweet id already seen.
+    # Engines only gather tweets newer than this so old tweets never qualify.
+    "heartbeat": {},
 }
 
 
@@ -81,3 +84,42 @@ def mark_quoted(state, tweet_id, score, text, dry_run):
         "quote": text,
         "dry_run": dry_run,
     }
+
+
+# --- Heartbeat: track the newest tweet seen per followed account -------------
+# Tweet ids are X snowflakes: id >> 22 = ms since Twitter's epoch, so ids
+# encode a monotonic timestamp. We store the highest id seen per account and
+# only gather tweets newer than it, plus a hard age window so genuinely old
+# tweets never qualify even on the first run.
+
+TWEET_EPOCH_MS = 1288834974657
+FRESH_WINDOW_HOURS = 48
+
+
+def _tweet_ts_ms(tweet_id) -> int:
+    try:
+        return (int(tweet_id) >> 22) + TWEET_EPOCH_MS
+    except (ValueError, TypeError):
+        return 0
+
+
+def seen_tweet_id(state, account_id) -> int:
+    return int(state.get("heartbeat", {}).get(str(account_id), 0) or 0)
+
+
+def mark_seen(state, account_id, tweet_id):
+    """Advance the account's heartbeat to a newer tweet id (max of the two)."""
+    state.setdefault("heartbeat", {})[str(account_id)] = max(
+        seen_tweet_id(state, account_id), int(tweet_id))
+
+
+def is_new_tweet(state, account_id, tweet_id) -> bool:
+    """True when the tweet is newer than the account's heartbeat AND within the
+    freshness window (so stale tweets don't resurface)."""
+    ts = _tweet_ts_ms(tweet_id)
+    if not ts:
+        return False
+    if int(tweet_id) <= seen_tweet_id(state, account_id):
+        return False
+    age_ms = time.time() * 1000 - ts
+    return age_ms <= FRESH_WINDOW_HOURS * 3600 * 1000

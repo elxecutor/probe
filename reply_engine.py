@@ -13,6 +13,24 @@ from state import (load_state, save_state, already_replied, mark_replied)
 
 log = logging.getLogger(__name__)
 
+_ARTICLE_LINK = "/i/article/"
+
+
+def _resolve_article_text(client: XClient, t: dict) -> str:
+    """Return the tweet's article body, fetching it on demand when needed.
+
+    UserTweets omits the article blocks, so if the tweet links an X Article and
+    _normalize_tweet didn't capture a body, fetch it via TweetResultByRestId."""
+    if t.get("article_text"):
+        return t["article_text"]
+    if any(_ARTICLE_LINK in u.get("expanded_url", "")
+           for u in t.get("urls", [])):
+        try:
+            return client.get_article_body(t["id_str"])
+        except Exception as e:
+            log.warning("  get_article_body(%s) failed: %s", t["id_str"], e)
+    return ""
+
 MIN_TEXT_LEN = 30
 ACCOUNTS_PER_RUN = 10   # rotate through followed accounts so no single one dominates
 TWEETS_PER_ACCOUNT = 5
@@ -57,7 +75,7 @@ def run_reply_cycle(client: XClient, state: dict, dry_run: bool, max_replies: in
             media_url = t["media"][0].get("url", "")
         desc = llm.describe_tweet(state, media_url, t["id_str"])
         article = llm.article_context(state, t.get("urls") or [], t["full_text"], t["id_str"],
-                                      inline_article=t.get("article_text", ""))
+                                      inline_article=_resolve_article_text(client, t))
         reply = llm.generate_reply(t["full_text"], name, bio, image_desc=desc, article=article)
         ok, reason = llm.safety_check(reply)
         if not ok:

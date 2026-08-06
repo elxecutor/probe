@@ -46,7 +46,8 @@ def run_quote_cycle(client: XClient, state: dict, dry_run: bool, max_quotes: int
         if t.get("media"):
             media_url = t["media"][0].get("url", "")
         desc = llm.describe_tweet(state, media_url, t["id_str"])
-        article = llm.article_context(state, t.get("urls") or [], t["full_text"], t["id_str"])
+        article = llm.article_context(state, t.get("urls") or [], t["full_text"], t["id_str"],
+                                      inline_article=t.get("article_text", ""))
         quote = llm.generate_quote(t["full_text"], t["author_screen_name"],
                                    image_desc=desc, article=article)
         honest, why = llm.honesty_check(quote)
@@ -111,7 +112,7 @@ def _gather_followed_candidates(client: XClient, following: dict, state: dict) -
         for t in tweets:
             if t["author_screen_name"] == "elxecutor":
                 continue
-            if len(t["full_text"]) < MIN_TEXT_LEN:
+            if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
                 continue
             if already_quoted(state, t["id_str"]):
                 continue

@@ -390,9 +390,23 @@ class XClient:
             if len(url_info) >= 2:
                 break
 
+        # X Articles: the caption (legacy.full_text) is just a teaser; the real
+        # body lives in result.article.article_results.result.content_state.blocks.
+        article_text = ""
+        article_blocks = (result.get("article", {})
+                          .get("article_results", {})
+                          .get("result", {})
+                          .get("content_state", {})
+                          .get("blocks", []))
+        if article_blocks:
+            article_text = "\n".join(
+                b.get("text", "") for b in article_blocks if b.get("text")
+            ).strip()
+
         return {
             "id_str": result.get("rest_id", ""),
             "full_text": legacy.get("full_text", ""),
+            "article_text": article_text,
             "created_at": legacy.get("created_at", ""),
             "conversation_id_str": legacy.get("conversation_id_str", ""),
             "author_id": user_result.get("rest_id", ""),

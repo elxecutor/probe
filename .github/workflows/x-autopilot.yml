@@ -46,6 +46,10 @@ on:
         description: "Preview only (do not post)"
         type: boolean
         default: true
+      fresh_state:
+        description: "Start from empty state (ignore last run's heartbeats/caps)"
+        type: boolean
+        default: false
 
 env:
   # Set to "false" once you want scheduled runs to post. Manual runs can override
@@ -79,7 +83,10 @@ jobs:
         run: pip install -r requirements.txt
 
       # state.json is git-ignored, so pull the previous run's copy back down.
+      # fresh_state skips the restore so a test run starts from empty heartbeats
+      # (every <48h tweet qualifies) — useful for E2E validation or a reset.
       - name: Restore state.json from last run
+        if: ${{ inputs.fresh_state != true }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

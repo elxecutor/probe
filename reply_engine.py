@@ -10,7 +10,7 @@ from x_client import XClient
 import llm
 import phoenix_scorer
 from state import (load_state, save_state, already_replied, mark_replied,
-                   seen_tweet_id, mark_seen, is_new_tweet)
+                   seen_tweet_id, mark_seen, is_new_tweet, already_engaged)
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +121,11 @@ def run_reply_cycle(client: XClient, state: dict, dry_run: bool, max_replies: in
             posted += 1
         else:
             try:
+                client.like(t["id_str"])
+                log.info("    liked tweet %s", t["id_str"])
+            except Exception as e:
+                log.warning("    FAILED to like tweet: %s", e)
+            try:
                 new_id = client.create_tweet(reply, reply_to_tweet_id=t["id_str"])
                 log.info("    posted (tweet %s)", new_id)
                 mark_replied(state, t["id_str"], score, reply, dry_run)
@@ -165,7 +170,7 @@ def _gather_followed_candidates(client: XClient, following: dict, state: dict) -
                 continue
             if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
                 continue
-            if already_replied(state, t["id_str"]):
+            if already_engaged(state, t["id_str"]):
                 continue
             candidates.append(t)
             if len(candidates) >= MAX_CANDIDATES:

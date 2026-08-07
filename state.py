@@ -77,6 +77,12 @@ def already_quoted(state, tweet_id):
     return str(tweet_id) in state.get("quoted", {})
 
 
+def already_engaged(state, tweet_id):
+    """True when the tweet has been replied to OR quoted — a tweet should only
+    ever be engaged once, whichever engine gets to it first."""
+    return already_replied(state, tweet_id) or already_quoted(state, tweet_id)
+
+
 def mark_quoted(state, tweet_id, score, text, dry_run):
     state.setdefault("quoted", {})[str(tweet_id)] = {
         "ts": time.time(),

@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 load_dotenv()
 
 from x_client import XClient  # noqa: E402
-from state import load_state, is_new_tweet, already_replied, already_quoted  # noqa: E402
+from state import load_state, is_new_tweet, already_engaged  # noqa: E402
 
 log = logging.getLogger("preflight")
 
@@ -68,7 +68,7 @@ def has_fresh_candidates(client: XClient, state: dict) -> bool:
                 continue
             if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
                 continue
-            if already_replied(state, t["id_str"]) or already_quoted(state, t["id_str"]):
+            if already_engaged(state, t["id_str"]):
                 continue
             account_fresh = True
             found += 1

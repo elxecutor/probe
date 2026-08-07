@@ -34,6 +34,16 @@ log = logging.getLogger("preflight")
 MIN_TEXT_LEN = 30
 TWEETS_PER_ACCOUNT = 3   # newest few is enough to detect "anything fresh"
 ACCOUNTS_PER_RUN = 24    # scan the whole follow list — preflight is cheap
+FRESH_ACCOUNTS_FILE = "fresh_accounts.txt"
+
+
+def _write_fresh_accounts(account_ids) -> None:
+    """Persist which accounts had fresh candidates so the engines can prioritize
+    them. The engines only sample a subset of followed accounts per run, so this
+    makes sure what preflight spotted is actually within reach of the engager."""
+    with open(FRESH_ACCOUNTS_FILE, "w") as f:
+        for acc in sorted(account_ids):
+            f.write(f"{acc}\n")
 
 
 def has_fresh_candidates(client: XClient, state: dict) -> bool:
@@ -43,12 +53,14 @@ def has_fresh_candidates(client: XClient, state: dict) -> bool:
     accounts = accounts[:ACCOUNTS_PER_RUN]
 
     found = 0
+    fresh_ids = set()
     for u in accounts:
         try:
             tweets, _ = client.get_user_tweets(u["id_str"], count=TWEETS_PER_ACCOUNT)
         except Exception as e:
             log.warning("  get_user_tweets(%s) failed: %s", u.get("screen_name"), e)
             continue
+        account_fresh = False
         for t in tweets:
             if t["author_screen_name"] == "elxecutor":
                 continue
@@ -58,12 +70,16 @@ def has_fresh_candidates(client: XClient, state: dict) -> bool:
                 continue
             if already_replied(state, t["id_str"]) or already_quoted(state, t["id_str"]):
                 continue
+            account_fresh = True
             found += 1
             log.info("  fresh candidate: @%s %s %.60s",
                      t["author_screen_name"], t["id_str"], t["full_text"])
+        if account_fresh:
+            fresh_ids.add(u["id_str"])
         time.sleep(0.3)
         if found >= 5:
             break
+    _write_fresh_accounts(fresh_ids)
     return found > 0
 
 

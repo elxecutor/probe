@@ -83,7 +83,7 @@ jobs:
       # fresh_state skips the restore so a test run starts from empty heartbeats
       # (every <48h tweet qualifies) — useful for E2E validation or a reset.
       - name: Restore state.json from last run
-        if: ${{ inputs.fresh_state != true }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.fresh_state != true }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -147,7 +147,7 @@ jobs:
         id: flags
         run: |
           dry="--dry-run"
-          if [ -n "${{ inputs.dry_run }}" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.dry_run }}" ]; then
             [ "${{ inputs.dry_run }}" = "true" ] && dry="--dry-run" || dry=""
           elif [ "$DRY_RUN" = "false" ]; then
             dry=""

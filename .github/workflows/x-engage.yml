@@ -1,0 +1,197 @@
+# elxecutor X autopilot — scheduled run.
+#
+# Runs one autopilot cycle (replies + quotes) on a cron. State (dedup log + daily
+# caps) is persisted between runs via a GitHub Actions artifact named
+# "autopilot-state", so tweets are never replied to / quoted twice.
+#
+# Phoenix ranking is OPTIONAL (USE_PHOENIX below, default off). When off, engines
+# fall back to the raw-engagement heuristic (the designed degraded mode). When on,
+# the workflow:
+#   1. installs the phoenix runtime deps (jax/dm-haiku/scipy/tabulate)
+#   2. downloads the ~2.9GB LFS archive from xai-org/x-algorithm and extracts only
+#      the ranker/ subset (~1.5GB embedding tables) that phoenix_scorer.py uses
+#   3. caches that 1.5GB dir so only the first run pays the download
+#   4. adds x-algorithm/phoenix to PYTHONPATH and ranks candidates with the model
+# Notes: needs ~3GB RAM on the runner (ubiquitous-latest has 7GB); cache saves on
+# the first run. The small phoenix/ python code IS committed; the 5.7GB artifacts
+# dir is git-ignored.
+#
+# Secrets to set in Settings → Secrets and variables → Actions:
+#   X_AUTH_TOKEN, X_CT0, X_USER_ID, X_USERNAME, GROQ_API_KEY
+# (These are the live X session cookies + your Groq key. Refresh X_AUTH_TOKEN/X_CT0
+# when they expire.)
+#
+# PRIVACY: host this in a PRIVATE repo. Nothing sensitive is committed (cookies and
+# the Groq key live only in Actions secrets; .env / state.json / logs are git-ignored),
+# and draft text is stripped from the state artifact before upload. But on a PUBLIC
+# repo the run logs + state artifact are readable by anyone, so a private repo is the
+# one hard guarantee that your drafts and engagement data stay private.
+#
+# Flip DRY_RUN to "false" below when you're ready to post for real. Until then every
+# run (scheduled or manual) is a preview.
+
+name: elxecutor x-engage
+
+on:
+  schedule:
+    # TEMPORARY: every 5 min to verify the schedule registration fires.
+    # Restore to every 30 min once confirmed.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only (do not post)"
+        type: boolean
+        default: true
+      fresh_state:
+        description: "Start from empty state (ignore last run's heartbeats/caps)"
+        type: boolean
+        default: false
+
+env:
+  # Set to "false" once you want scheduled runs to post. Manual runs can override
+  # per-run via the dry_run input.
+  DRY_RUN: "false"
+  # Phoenix ranker in CI. Off = engagement heuristic (fast, no model download).
+  USE_PHOENIX: "true"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: autopilot
+  cancel-in-progress: false
+
+jobs:
+  autopilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      # state.json is git-ignored, so pull the previous run's copy back down.
+      # fresh_state skips the restore so a test run starts from empty heartbeats
+      # (every <48h tweet qualifies) — useful for E2E validation or a reset.
+      - name: Restore state.json from last run
+        if: ${{ inputs.fresh_state != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '[.workflow_runs[] | select(.id < ${{ github.run_id }} and .path == ".github/workflows/x-engage.yml" and .conclusion == "success")][0].id' 2>/dev/null || true)
+          if [ -n "$run_id" ]; then
+            gh run download "$run_id" -n autopilot-state --dir ./dl >/dev/null 2>&1 || true
+          fi
+          if [ -f ./dl/state.json ]; then
+            cp ./dl/state.json ./state.json
+            echo "restored state.json ($(wc -c < state.json) bytes)"
+          else
+            echo "no previous state (fresh run)"
+          fi
+
+      - name: Write .env from secrets
+        run: |
+          cat > .env <<EOF
+          X_AUTH_TOKEN=${{ secrets.X_AUTH_TOKEN }}
+          X_CT0=${{ secrets.X_CT0 }}
+          X_USER_ID=${{ secrets.X_USER_ID }}
+          X_USERNAME=${{ secrets.X_USERNAME }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          EOF
+
+      # Cheap scan before the heavy steps: only bother with Phoenix + the model
+      # (and posting) when there is genuinely something fresh to respond to.
+      - name: Preflight (fresh candidates?)
+        id: preflight
+        run: |
+          export PYTHONPATH="$PWD"
+          python preflight.py
+          echo "has_candidates=$(cat preflight.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Phoenix deps
+        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true'
+        run: pip install jax==0.8.1 jaxlib==0.8.1 dm-haiku==0.0.17 scipy tabulate
+
+      - name: Cache Phoenix ranker artifacts
+        id: phoenix-cache
+        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true'
+        uses: actions/cache@v4
+        with:
+          path: x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
+          key: phoenix-ranker-v1
+
+      - name: Fetch Phoenix ranker artifacts
+        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true' && steps.phoenix-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/phoenix /tmp/phoenix-artifacts
+          curl -sL -o /tmp/phoenix/oss-phoenix-artifacts.zip \
+            "https://media.githubusercontent.com/media/xai-org/x-algorithm/main/phoenix/artifacts/oss-phoenix-artifacts.zip"
+          unzip -o /tmp/phoenix/oss-phoenix-artifacts.zip \
+            "oss-phoenix-artifacts/ranker/*" -d /tmp/phoenix-artifacts/
+          mkdir -p x-algorithm/phoenix/artifacts/oss-phoenix-artifacts
+          cp -r /tmp/phoenix-artifacts/oss-phoenix-artifacts/ranker \
+            x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
+          du -sh x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
+
+      - name: Resolve dry-run flag
+        id: flags
+        run: |
+          dry="--dry-run"
+          if [ -n "${{ inputs.dry_run }}" ]; then
+            [ "${{ inputs.dry_run }}" = "true" ] && dry="--dry-run" || dry=""
+          elif [ "$DRY_RUN" = "false" ]; then
+            dry=""
+          fi
+          echo "dry=$dry" >> "$GITHUB_OUTPUT"
+
+      - name: Run autopilot
+        if: steps.preflight.outputs.has_candidates == '1'
+        run: |
+          export PYTHONPATH="$PWD"
+          if [ "$USE_PHOENIX" = "true" ]; then
+            export PYTHONPATH="$PYTHONPATH:$PWD/x-algorithm/phoenix"
+          fi
+          python engager.py --once ${{ steps.flags.outputs.dry }}
+
+      - name: No fresh candidates — skipping
+        if: steps.preflight.outputs.has_candidates != '1'
+        run: echo "No fresh tweets from followed accounts; skipping model load and posting."
+
+      - name: Sanitize state.json for artifact
+        # Strip authored draft text (reply/quote) before upload — dedup only needs
+        # tweet ids, so drafts never leave the runner. Guards a missing/corrupt file.
+        run: |
+          if [ ! -f state.json ]; then
+            echo "no state.json to sanitize"
+            exit 0
+          fi
+          python - <<'PY'
+          import json
+          with open("state.json") as f:
+              s = json.load(f)
+          for key in ("replied", "quoted"):
+              for entry in s.get(key, {}).values():
+                  entry.pop("reply", None)
+                  entry.pop("quote", None)
+          with open("state.json", "w") as f:
+              json.dump(s, f, indent=2)
+          PY
+
+      - name: Upload state.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autopilot-state
+          path: state.json
+          if-no-files-found: ignore
+          retention-days: 2

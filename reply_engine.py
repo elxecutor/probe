@@ -36,6 +36,28 @@ MIN_TEXT_LEN = 30
 ACCOUNTS_PER_RUN = 10   # rotate through followed accounts so no single one dominates
 TWEETS_PER_ACCOUNT = 5
 MAX_CANDIDATES = 30
+FRESH_ACCOUNTS_FILE = "fresh_accounts.txt"   # written by preflight.py
+
+
+def _prioritized_accounts(following: list) -> list:
+    """Order followed accounts so preflight-flagged ones are scanned first.
+
+    Preflight scans the whole follow list and records which accounts hold fresh
+    candidates; the engines only sample a subset per run. Putting those accounts
+    first means what preflight spotted is actually within reach — the random
+    sample then fills the rest of the budget."""
+    fresh = set()
+    try:
+        with open(FRESH_ACCOUNTS_FILE) as f:
+            fresh = {line.strip() for line in f if line.strip()}
+    except FileNotFoundError:
+        pass
+    if not fresh:
+        return following
+    priority = [u for u in following if u["id_str"] in fresh]
+    rest = [u for u in following if u["id_str"] not in fresh]
+    random.shuffle(rest)
+    return priority + rest
 
 
 def run_reply_cycle(client: XClient, state: dict, dry_run: bool, max_replies: int) -> int:
@@ -125,6 +147,7 @@ def _gather_followed_candidates(client: XClient, following: dict, state: dict) -
     """
     accounts = list(following.values())
     random.shuffle(accounts)
+    accounts = _prioritized_accounts(accounts)
     accounts = accounts[:ACCOUNTS_PER_RUN]
 
     candidates = []

@@ -75,13 +75,15 @@ def run_quote_cycle(client: XClient, state: dict, dry_run: bool, max_quotes: int
 
     ranked = phoenix_scorer.rank_candidates(client, state, candidates)
     if ranked and "phoenix" in ranked[0]:
-        selected = ranked[:max_quotes]
+        selected = ranked
     else:
         ranked = sorted(candidates, key=_engagement, reverse=True)
-        selected = ranked[:max_quotes]
+        selected = ranked
 
     posted = 0
     for t in selected:
+        if posted >= max_quotes:
+            break
         score = t.get("phoenix", {}).get("weighted", 0.0)
         media_url = ""
         if t.get("media"):
@@ -125,7 +127,8 @@ def run_quote_cycle(client: XClient, state: dict, dry_run: bool, max_quotes: int
                 posted += 1
             except Exception as e:
                 log.error("    FAILED to quote-post: %s", e)
-        break  # one post per run
+        if posted >= max_quotes:
+            break  # one post per run
 
     save_state(state)
     log.info("Quote cycle done: %d posted", posted)

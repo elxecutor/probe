@@ -34,14 +34,9 @@ name: elxecutor autopilot
 
 on:
   schedule:
-    # Every 30 min, UTC, offset to :03/:33. Top-of-hour (:00/:30) is a documented
-    # GitHub Actions high-load window where schedule events get delayed or dropped;
-    # the offset dodges it. Engager posts ONE tweet per run, alternating between a
-    # reply and a quote; daily caps in state.json (20 replies / 6 quotes) keep
-    # volume in check. Preflight makes quiet runs cheap (~1 min, API-only), so a
-    # tight cadence just picks up fresh tweets faster — the model still only
-    # loads when there's something to rank. Tune the cron freely.
-    - cron: "3-59/30 * * * *"
+    # TEMPORARY: every 5 min to verify the fresh schedule registration fires.
+    # Restore to 3-59/30 (every 30 min, :03/:33) once confirmed.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

@@ -115,7 +115,7 @@ jobs:
         id: preflight
         run: |
           export PYTHONPATH="$PWD"
-          python preflight.py
+          python engager.py --preflight
           echo "has_candidates=$(cat preflight.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Install Phoenix deps

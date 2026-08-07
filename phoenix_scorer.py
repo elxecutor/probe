@@ -3,8 +3,8 @@
 
 Wraps the X Phoenix ranker model (x-algorithm/phoenix) to predict engagement
 probabilities (fav, reply, retweet, dwell) for candidate tweets given the
-account's own history. Used by reply_engine and quote_engine as a
-model-based ranking signal on top of the Groq LLM scoring.
+account's own history. Used by engines.py as a model-based ranking signal on
+top of the Groq LLM scoring.
 
 The model is loaded lazily once per process (it needs ~1.5GB for the ranker
 embedding tables) and reused across cycles.

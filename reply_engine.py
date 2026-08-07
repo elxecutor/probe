@@ -81,14 +81,14 @@ def run_reply_cycle(client: XClient, state: dict, dry_run: bool, max_replies: in
     ranked = phoenix_scorer.rank_candidates(client, state, candidates)
     if ranked and "phoenix" in ranked[0]:
         log.info("  ranked by Phoenix predicted engagement")
-        selected = ranked[:max_replies]
     else:
         log.info("  ranked by raw engagement heuristic")
         ranked = sorted(candidates, key=_engagement, reverse=True)
-        selected = ranked[:max_replies]
 
     posted = 0
-    for t in selected:
+    for t in ranked:
+        if posted >= max_replies:
+            break
         score = t.get("phoenix", {}).get("weighted", 0.0)
         author = following.get(t["author_id"], {})
         bio = author.get("description", "")
@@ -127,7 +127,8 @@ def run_reply_cycle(client: XClient, state: dict, dry_run: bool, max_replies: in
                 posted += 1
             except Exception as e:
                 log.error("    FAILED to post reply: %s", e)
-        break  # one post per run
+        if posted >= max_replies:
+            break  # one post per run
 
     save_state(state)
     log.info("Reply cycle done: %d posted", posted)

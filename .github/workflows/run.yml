@@ -34,9 +34,7 @@ name: elxecutor x-engage
 
 on:
   schedule:
-    # TEMPORARY: every 5 min to verify the schedule registration fires.
-    # Restore to every 30 min once confirmed.
-    - cron: "*/5 * * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:

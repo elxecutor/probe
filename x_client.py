@@ -569,6 +569,49 @@ class XClient:
             return ""
         return "\n".join(b.get("text", "") for b in blocks if b.get("text")).strip()
 
+    def get_tweet_conversation(self, tweet_id):
+        """Fetch the threaded conversation for a tweet via TweetDetail.
+
+        Returns the list of tweets in the thread (oldest first), each normalized,
+        so callers can reconstruct the reply chain leading up to `tweet_id`."""
+        variables = {
+            "focalTweetId": str(tweet_id),
+            "cursor": None,
+            "referrer": "tweet",
+            "with_rux_injections": False,
+            "includePromotedContent": False,
+            "withCommunity": True,
+            "withQuickPromoteEligibility": False,
+            "withBirdwatchNotes": False,
+            "withDownvotePerspective": False,
+            "withReactionsMetadata": False,
+            "withReactionsPerspective": False,
+            "withVoice": False,
+            "withV2Timeline": True,
+        }
+        data = self._graphql_get(QUERY_IDS["TweetDetail"], "TweetDetail", variables, features=FEATURES)
+        tweets = []
+        try:
+            root = data["data"].get("threaded_conversation_with_injections_v2") or data["data"]["threaded_conversation_with_injections"]
+            instructions = root["instructions"]
+        except (KeyError, TypeError):
+            return tweets
+
+        for instr in instructions:
+            if instr.get("type") != "TimelineAddEntries":
+                continue
+            for entry in instr.get("entries", []):
+                content = entry.get("content", {})
+                if content.get("entryType") != "TimelineTimelineItem":
+                    continue
+                item = content.get("itemContent", {})
+                if item.get("itemType") != "TimelineTweet":
+                    continue
+                result = item.get("tweet_results", {}).get("result", {})
+                if result and result.get("__typename") == "Tweet":
+                    tweets.append(self._normalize_tweet(result))
+        return tweets
+
     def get_for_you_timeline(self, count=20, cursor=None):
         variables = {
             "count": min(count, 100),

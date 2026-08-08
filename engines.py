@@ -193,12 +193,15 @@ def run_followed_cycle(client: XClient, state: dict, dry_run: bool,
         desc = llm.describe_tweet(state, media_url, t["id_str"])
         article = llm.article_context(state, t.get("urls") or [], t["full_text"], t["id_str"],
                                       inline_article=_resolve_article_text(client, t))
+        thread = _thread_context(client, t["id_str"])
         if mode == "reply":
             text = llm.generate_reply(t["full_text"], name, bio,
-                                      image_desc=desc, article=article)
+                                      image_desc=desc, article=article,
+                                      thread_context=thread)
         else:
             text = llm.generate_quote(t["full_text"], t["author_screen_name"],
-                                      image_desc=desc, article=article)
+                                      image_desc=desc, article=article,
+                                      thread_context=thread)
 
         ok, block_line = _gate_text(mode, text, t["author_screen_name"])
         if not ok:
@@ -293,6 +296,27 @@ def _notification_candidates(client: XClient, state: dict) -> list:
     return candidates
 
 
+def _thread_context(client: XClient, tweet_id: str) -> str:
+    """Fetch the reply chain leading up to `tweet_id` and format it as context.
+
+    Returns a string of the form `@user: text` for each tweet in the thread,
+    oldest first, capped so the LLM prompt stays bounded. Empty on failure."""
+    try:
+        thread = client.get_tweet_conversation(tweet_id)
+    except Exception as e:
+        log.warning("  get_tweet_conversation(%s) failed: %s", tweet_id, e)
+        return ""
+    if not thread:
+        return ""
+    lines = []
+    for t in thread:
+        name = t.get("author_screen_name", "")
+        text = t.get("full_text", "").replace("\n", " ").strip()
+        if name and text:
+            lines.append(f"@{name}: {text[:200]}")
+    return "\n".join(lines[-12:])
+
+
 def run_notification_cycle(client: XClient, state: dict, dry_run: bool,
                            max_posts: int = 1) -> int:
     """Respond to replies/mentions on our own posts (one reply per run).
@@ -313,8 +337,10 @@ def run_notification_cycle(client: XClient, state: dict, dry_run: bool,
         mark_viewed(state, t["id_str"])
         name = t.get("author_name", t.get("author_screen_name", ""))
         bio = t.get("author_bio", "")
+        thread = _thread_context(client, t["id_str"])
         text = llm.generate_reply(t["full_text"], name, bio,
-                                  image_desc="", article="")
+                                  image_desc="", article="",
+                                  thread_context=thread)
         ok, block_line = _gate_text("reply", text, t["author_screen_name"])
         if not ok:
             # Marked viewed above: a reply is only ever answered once, so a

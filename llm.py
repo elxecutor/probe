@@ -272,8 +272,12 @@ def _generate_varied(system: str, user: str, max_tokens: int = 160) -> str:
     return text
 
 
-def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_desc: str = "", article: str = "") -> str:
-    """Generate a genuine, in-voice reply from the elxecutor persona."""
+def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_desc: str = "", article: str = "", thread_context: str = "") -> str:
+    """Generate a genuine, in-voice reply from the elxecutor persona.
+
+    When `thread_context` is provided, it is the preceding reply chain (oldest
+    first) leading up to this tweet, so the reply can reference earlier turns
+    instead of treating the tweet in isolation."""
     system = (
         "You are @elxecutor, a 19-year-old EEE student at OAU, Nigeria who posts as a "
         "real person. You are texting someone you follow on X. Write like a real human "
@@ -317,6 +321,8 @@ def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_des
         f"Tweet from @{author_name} (bio: {author_bio[:120]}):\n\n"
         f'"{tweet_text[:500]}"'
     )
+    if thread_context:
+        user += f"\n\nThis is the conversation so far (oldest first):\n{thread_context[:1500]}"
     if image_desc:
         user += f'\n\nThe tweet includes an image which shows: {image_desc[:300]}'
     if article:
@@ -325,8 +331,11 @@ def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_des
     return _generate_varied(system, user)
 
 
-def generate_quote(tweet_text: str, author_name: str, image_desc: str = "", article: str = "") -> str:
+def generate_quote(tweet_text: str, author_name: str, image_desc: str = "", article: str = "", thread_context: str = "") -> str:
     """Generate a short original commentary for a quote-post of someone else's tweet.
+
+    When `thread_context` is provided, it is the preceding reply chain (oldest
+    first) leading up to this tweet.
 
     HONESTY RULES: the account is a real person; never claim to have done a build,
     measurement, teardown, or experiment that was not actually performed. No invented
@@ -377,6 +386,8 @@ def generate_quote(tweet_text: str, author_name: str, image_desc: str = "", arti
         f"Tweet by @{author_name}:\n\n"
         f'"{tweet_text[:500]}"'
     )
+    if thread_context:
+        user += f"\n\nThis is the conversation so far (oldest first):\n{thread_context[:1500]}"
     if image_desc:
         user += f'\n\nThe tweet includes an image which shows: {image_desc[:300]}'
     if article:

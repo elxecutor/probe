@@ -1,8 +1,8 @@
-# elxecutor
+# Probe
 
 > Autonomous X/Twitter autopilot for the [@elxecutor](https://x.com/elxecutor) account — replies to posts, quotes, answers notifications, and publishes original content on a schedule, all under daily caps with deduplication.
 
-`elxecutor` is a Python autopilot that runs as a scheduled GitHub Actions workflow. Each run posts at most one tweet, alternating between replies and quotes, and uses the [X Phoenix model](https://github.com/xai-org/x-algorithm) to rank candidates by predicted engagement before generating a response with an LLM.
+`Probe` is a Python autopilot that runs as a scheduled GitHub Actions workflow. Each run posts at most one tweet, alternating between replies and quotes, and uses the [X Phoenix model](https://github.com/xai-org/x-algorithm) to rank candidates by predicted engagement before generating a response with an LLM.
 
 ## Features
 

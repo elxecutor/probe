@@ -10,13 +10,15 @@ Subcommands:
   (default)         autopilot loop — one reply/quote post per run
   --preflight       cheap fresh-candidate scan (CI gate; read-only, no model load)
   --digest          daily digest of posts worth engaging with manually
-  --content         standalone original-content cycle (trending niche tweets)
+   --content         standalone original-content cycle (trending niche tweets)
+   --floor-notifications   stamp notification baseline at now (ignore all present replies)
 
 Usage:
   python engager.py [--dry-run] [--once]
   python engager.py --preflight
   python engager.py --digest
   python engager.py --content [--dry-run] [--max-tweets N]
+  python engager.py --floor-notifications
 """
 
 import argparse
@@ -154,6 +156,31 @@ def preflight():
     return 0
 
 
+def floor_notifications():
+    """Stamp the notification floor at the newest notification right now.
+
+    Everything present at or below this baseline is left alone forever; only
+    replies/mentions that arrive AFTER this moment become reply candidates."""
+    client = XClient()
+    state = load_state()
+    newest = 0
+    try:
+        notifs, _ = client.get_notifications(count=40)
+        for n in notifs:
+            try:
+                newest = max(newest, int(n.get("timestamp") or 0))
+            except (ValueError, TypeError):
+                continue
+    except Exception as e:
+        log.warning("  get_notifications failed: %s", e)
+    now_ms = int(time.time() * 1000)
+    floor = max(newest, now_ms)
+    state["notification_floor"] = floor
+    save_state(state)
+    print(f"notification_floor set to {floor} ({len(notifs)} present notifications ignored)")
+    return 0
+
+
 # --- Daily digest ------------------------------------------------------------
 
 USERNAME = "elxecutor"
@@ -209,6 +236,8 @@ def main():
                     help="print today's digest of posts worth engaging with, exit")
     ap.add_argument("--content", action="store_true",
                     help="run the standalone original-content cycle, exit")
+    ap.add_argument("--floor-notifications", action="store_true",
+                    help="stamp the notification floor at now, exit (bot ignores all present notifications)")
     ap.add_argument("--dry-run", action="store_true", help="preview actions without posting")
     ap.add_argument("--once", action="store_true", help="run one cycle then exit")
     ap.add_argument("--max-tweets", type=int, default=2, help="content cycle limit")
@@ -237,6 +266,8 @@ def main():
         state = load_state()
         engines.run_content_cycle(client, state, args.dry_run, args.max_tweets)
         return 0
+    if args.floor_notifications:
+        return floor_notifications()
     _autopilot(args)
     return 0
 

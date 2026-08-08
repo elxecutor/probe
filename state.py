@@ -31,6 +31,11 @@ _DEFAULT_STATE = {
     # on our own posts). Once seen, never responded to again — "only respond to
     # stuff it hasn't seen" applies to the notification path too.
     "viewed": {},
+    # Epoch-ms baseline for the notification timeline. Only replies/mentions with
+    # sortIndex strictly newer than this qualify, so once the floor is stamped the
+    # bot leaves all pre-existing notifications alone and only answers what comes
+    # after. 0 = no floor (legacy behavior).
+    "notification_floor": 0,
 }
 
 
@@ -156,3 +161,16 @@ def is_viewed(state, tweet_id) -> bool:
 def mark_viewed(state, tweet_id):
     """Record that a notification tweet has been seen, so later runs skip it."""
     state.setdefault("viewed", {})[str(tweet_id)] = time.time()
+
+
+def is_above_notification_floor(state, sort_index) -> bool:
+    """True when a notification is strictly newer than the stamped floor.
+
+    The floor is an epoch-ms baseline: everything at or below it counts as
+    'present' and is left alone; only future notifications pass."""
+    floor = state.get("notification_floor", 0) or 0
+    try:
+        si = int(sort_index)
+    except (ValueError, TypeError):
+        return True
+    return si > floor

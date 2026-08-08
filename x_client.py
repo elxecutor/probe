@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import logging
 import os
 import random
 import re
@@ -12,6 +13,8 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 API_BASE = "https://api.x.com/1.1"
 GRAPHQL_BASE = "https://x.com/i/api/graphql"
@@ -131,7 +134,7 @@ class XClient:
         try:
             headers["X-Client-Transaction-Id"] = self._txid.generate(method, path)
         except Exception as e:
-            print(f"  [warn] txid generation failed ({e}); continuing without")
+            log.warning("txid generation failed (%s); continuing without", e)
         return headers
 
     def _graphql_post(self, query_id, operation_name, variables, features=None):
@@ -143,7 +146,7 @@ class XClient:
         headers = self._attach_txid({}, "POST", path)
         resp = self.session.post(url, json=payload, headers=headers)
         if resp.status_code == 429:
-            print("  Rate limited. Waiting 60s...")
+            log.warning("Rate limited. Waiting 60s...")
             time.sleep(60)
             return self._graphql_post(query_id, operation_name, variables, features)
         resp.raise_for_status()
@@ -160,7 +163,7 @@ class XClient:
         headers = self._attach_txid({}, "GET", path)
         resp = self.session.get(url, params=params, headers=headers)
         if resp.status_code == 429:
-            print("  Rate limited. Waiting 60s...")
+            log.warning("Rate limited. Waiting 60s...")
             time.sleep(60)
             return self._graphql_get(query_id, operation_name, variables, features, field_toggles)
         resp.raise_for_status()
@@ -261,95 +264,6 @@ class XClient:
             time.sleep(1.1)
 
         return all_users
-
-    def get_followers(self, user_id=None, count=100, cursor=None):
-        variables = {
-            "userId": user_id or self.user_id,
-            "count": min(count, 100),
-            "includePromotedContent": False,
-        }
-        if cursor:
-            variables["cursor"] = cursor
-
-        data = self._graphql_get(QUERY_IDS["Followers"], "Followers", variables, features=FEATURES)
-        users, next_cursor = self._extract_users_from_timeline(data)
-        return users, next_cursor
-
-    def get_all_followers(self, user_id=None, on_progress=None):
-        all_users = []
-        cursor = None
-        page = 0
-
-        while True:
-            page += 1
-            users, cursor = self.get_followers(user_id=user_id, cursor=cursor)
-            all_users.extend(users)
-
-            if on_progress:
-                on_progress(page, len(users), len(all_users))
-
-            if not users or not cursor:
-                break
-            time.sleep(1.1)
-
-        return all_users
-
-    def follow(self, target_user_id):
-        params = {
-            "include_profile_interstitial_type": "1",
-            "include_blocking": "1",
-            "include_blocked_by": "1",
-            "include_followed_by": "1",
-            "include_want_retweets": "1",
-            "include_mute_edge": "1",
-            "include_can_dm": "1",
-            "include_can_media_tag": "1",
-            "include_ext_is_blue_verified": "1",
-            "include_ext_verified_type": "1",
-            "include_ext_profile_image_shape": "1",
-            "skip_status": "1",
-            "user_id": str(target_user_id),
-        }
-        resp = self.session.post(f"{REST_BASE}/friendships/create.json", data=params)
-        if resp.status_code == 429:
-            print("  Rate limited. Waiting 60s...")
-            time.sleep(60)
-            return self.follow(target_user_id)
-        resp.raise_for_status()
-        return resp.json()
-
-    def unfollow(self, target_user_id):
-        params = {
-            "include_profile_interstitial_type": "1",
-            "include_blocking": "1",
-            "include_blocked_by": "1",
-            "include_followed_by": "1",
-            "include_want_retweets": "1",
-            "include_mute_edge": "1",
-            "include_can_dm": "1",
-            "include_can_media_tag": "1",
-            "include_ext_is_blue_verified": "1",
-            "include_ext_verified_type": "1",
-            "include_ext_profile_image_shape": "1",
-            "skip_status": "1",
-            "user_id": str(target_user_id),
-        }
-        resp = self.session.post(f"{REST_BASE}/friendships/destroy.json", data=params)
-        if resp.status_code == 429:
-            print("  Rate limited. Waiting 60s...")
-            time.sleep(60)
-            return self.unfollow(target_user_id)
-        resp.raise_for_status()
-        return resp.json()
-
-    def get_user_by_screen_name(self, screen_name):
-        variables = {"screen_name": screen_name}
-        data = self._graphql_get(QUERY_IDS["UserByScreenName"], "UserByScreenName", variables, features=FEATURES)
-        try:
-            result = data["data"]["user"]["result"]
-            return self._normalize_user(result) if result else None
-        except KeyError:
-            return None
 
     @staticmethod
     def _normalize_tweet(result):
@@ -622,64 +536,6 @@ class XClient:
         path = ["data", "user", "result", "timeline", "timeline"]
         return self._extract_tweets_from_timeline(data, path)
 
-    def get_all_likes(self, user_id=None, on_progress=None):
-        all_tweets = []
-        cursor = None
-        page = 0
-
-        while True:
-            page += 1
-            tweets, cursor = self.get_likes(user_id=user_id, cursor=cursor)
-            all_tweets.extend(tweets)
-
-            if on_progress:
-                on_progress(page, len(tweets), len(all_tweets))
-
-            if not tweets or not cursor:
-                break
-            time.sleep(1.1)
-
-        return all_tweets
-
-    def get_bookmarks(self, count=40, cursor=None):
-        variables = {"count": min(count, 40), "includePromotedContent": True}
-        if cursor:
-            variables["cursor"] = cursor
-        data = self._graphql_get(QUERY_IDS["Bookmarks"], "Bookmarks", variables, features=FEATURES)
-        path = ["data", "bookmark_timeline_v2", "timeline"]
-        return self._extract_tweets_from_timeline(data, path)
-
-    def create_bookmark(self, tweet_id):
-        variables = {"tweet_id": str(tweet_id)}
-        data = self._graphql_post(QUERY_IDS["CreateBookmark"], "CreateBookmark", variables, features=FEATURES)
-        return data
-
-    def delete_bookmark(self, tweet_id):
-        variables = {"tweet_id": str(tweet_id)}
-        qid = QUERY_IDS["DeleteBookmark"]
-        payload = {"variables": variables, "queryId": qid, "features": FEATURES}
-        resp = self.session.post(f"{GRAPHQL_BASE}/{qid}/DeleteBookmark", json=payload)
-        if resp.status_code == 429:
-            print("  Rate limited. Waiting 60s...")
-            time.sleep(60)
-            return self.delete_bookmark(tweet_id)
-        resp.raise_for_status()
-        return resp.json()
-
-    def get_user_tweets(self, user_id=None, count=20, cursor=None):
-        uid = user_id or self.user_id
-        variables = {
-            "userId": uid,
-            "count": min(count, 100),
-            "includePromotedContent": False,
-            "withVoice": False,
-        }
-        if cursor:
-            variables["cursor"] = cursor
-
-        data = self._graphql_get(QUERY_IDS["UserTweets"], "UserTweets", variables, features=FEATURES)
-        return self._extract_tweets_from_timeline(data, ["data", "user", "result", "timeline", "timeline"])
-
     def get_article_body(self, tweet_id: str) -> str:
         """Fetch an X Article's body for a tweet via TweetResultByRestId.
 
@@ -712,46 +568,6 @@ class XClient:
         except (KeyError, TypeError):
             return ""
         return "\n".join(b.get("text", "") for b in blocks if b.get("text")).strip()
-
-    def get_tweet_conversation(self, tweet_id):
-        variables = {
-            "focalTweetId": str(tweet_id),
-            "cursor": None,
-            "referrer": "tweet",
-            "with_rux_injections": False,
-            "includePromotedContent": False,
-            "withCommunity": True,
-            "withQuickPromoteEligibility": False,
-            "withBirdwatchNotes": False,
-            "withDownvotePerspective": False,
-            "withReactionsMetadata": False,
-            "withReactionsPerspective": False,
-            "withVoice": False,
-            "withV2Timeline": True,
-        }
-        data = self._graphql_get(QUERY_IDS["TweetDetail"], "TweetDetail", variables, features=FEATURES)
-        tweets = []
-        next_cursor = None
-        try:
-            root = data["data"].get("threaded_conversation_with_injections_v2") or data["data"]["threaded_conversation_with_injections"]
-            instructions = root["instructions"]
-        except KeyError:
-            return tweets, None
-
-        for instr in instructions:
-            if instr.get("type") == "TimelineAddEntries":
-                for entry in instr.get("entries", []):
-                    content = entry.get("content", {})
-                    if content.get("entryType") == "TimelineTimelineItem":
-                        item = content.get("itemContent", {})
-                        if item.get("itemType") == "TimelineTweet":
-                            result = item.get("tweet_results", {}).get("result", {})
-                            if result and result.get("__typename") == "Tweet":
-                                tweets.append(self._normalize_tweet(result))
-                    elif content.get("entryType") == "TimelineTimelineCursor":
-                        if content.get("cursorType") == "Bottom":
-                            next_cursor = content.get("value")
-        return tweets, next_cursor
 
     def get_for_you_timeline(self, count=20, cursor=None):
         variables = {
@@ -789,11 +605,6 @@ class XClient:
 
         return tweets, next_cursor
 
-    def unlike(self, tweet_id):
-        variables = {"tweet_id": str(tweet_id)}
-        data = self._graphql_post(QUERY_IDS["UnfavoriteTweet"], "UnfavoriteTweet", variables, features=FEATURES)
-        return data
-
     def like(self, tweet_id):
         variables = {"tweet_id": str(tweet_id)}
         data = self._graphql_post(QUERY_IDS["FavoriteTweet"], "FavoriteTweet", variables, features=FEATURES)
@@ -819,7 +630,7 @@ class XClient:
         }
         resp = self.session.get(self.TRENDING_API, params=params, headers=headers)
         if resp.status_code == 429:
-            print("  Rate limited. Waiting 60s...")
+            log.warning("Rate limited. Waiting 60s...")
             time.sleep(60)
             return self._get_trending_raw()
         resp.raise_for_status()
@@ -872,7 +683,7 @@ class XClient:
         }
         resp = self.session.get(self.TRENDING_TIMELINE_API, params=params, headers=headers)
         if resp.status_code == 429:
-            print("  Rate limited. Waiting 60s...")
+            log.warning("Rate limited. Waiting 60s...")
             time.sleep(60)
             return self._get_trending_timeline_id()
         resp.raise_for_status()
@@ -907,13 +718,6 @@ class XClient:
                     continue
                 tweets.append(self._normalize_tweet(result))
         return tweets
-
-    def get_trending_context(self, topic_count=50, tweet_count=20):
-        return {
-            "category": self.TRENDING_CATEGORY,
-            "topics": self.get_trending(count=topic_count),
-            "tweets": self.get_trending_tweets(count=tweet_count),
-        }
 
 
 # --- X-Client-Transaction-Id generator ---------------------------------------

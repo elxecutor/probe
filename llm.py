@@ -577,3 +577,41 @@ def safety_check(text: str) -> tuple[bool, str]:
     if not text.strip():
         return False, "empty"
     return True, "ok"
+
+
+def should_continue_thread(thread_context: str, reply_text: str) -> bool:
+    """Decide whether a notification reply warrants a response.
+
+    The notification cycle sees every reply to/mention of our own posts, but
+    many of those are short acknowledgments ('yes exactly', 'nice', 'thanks') or
+    simple answers that naturally end the conversation. Replying to those is
+    noise. This gate looks at the reply in the context of the thread leading up
+    to it and returns False when the conversation is better left alone."""
+    system = (
+        "You are a human deciding whether to reply to the LAST tweet in a thread. "
+        "The thread so far is provided below, oldest first. Return ONLY JSON: "
+        '{"reply": true/false, "reason": one short sentence}. '
+        "Set reply=false if the last tweet is just an acknowledgment of what was "
+        "already said ('yes exactly', 'nice one', 'thanks', 'makes sense'), a short "
+        "answer to a question that doesn't invite follow-up, or anything that feels "
+        "like a natural end to the conversation. "
+        "Set reply=true if the last tweet asks a genuine question, adds new "
+        "information worth responding to, or otherwise continues the conversation "
+        "in a way a real person would naturally reply to. "
+        "When in doubt, say false — it's better to skip than to be noisy."
+    )
+    user = (
+        f"Thread so far (oldest first):\n{thread_context[:1500]}\n\n"
+        f"Last tweet (the notification):\n{reply_text[:500]}\n\n"
+        "Should you reply to the last tweet?"
+    )
+    try:
+        raw = _chat(system, user, max_tokens=120, temperature=0.1)
+    except RuntimeError:
+        return True
+    # The LLM sometimes emits unquoted values in the reason field, so pull the
+    # boolean out directly rather than relying on strict JSON parsing.
+    m = re.search(r'"reply"\s*:\s*(true|false)', raw, re.I)
+    if not m:
+        return True
+    return m.group(1).lower() == "true"

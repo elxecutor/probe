@@ -338,6 +338,10 @@ def run_notification_cycle(client: XClient, state: dict, dry_run: bool,
         name = t.get("author_name", t.get("author_screen_name", ""))
         bio = t.get("author_bio", "")
         thread = _thread_context(client, t["id_str"])
+        if thread and not llm.should_continue_thread(thread, t["full_text"]):
+            log.info("  skipping conversation-ending reply to @%s: %.80s",
+                     t["author_screen_name"], t["full_text"])
+            continue
         text = llm.generate_reply(t["full_text"], name, bio,
                                   image_desc="", article="",
                                   thread_context=thread)

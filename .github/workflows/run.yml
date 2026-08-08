@@ -88,7 +88,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run_id=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
-            --jq '[.workflow_runs[] | select(.id < ${{ github.run_id }} and .path == ".github/workflows/x-engage.yml" and .conclusion == "success")][0].id' 2>/dev/null || true)
+            --jq '[.workflow_runs[] | select(.id < ${{ github.run_id }} and .path == ".github/workflows/run.yml" and .conclusion == "success")][0].id' 2>/dev/null || true)
           if [ -n "$run_id" ]; then
             gh run download "$run_id" -n autopilot-state --dir ./dl >/dev/null 2>&1 || true
           fi

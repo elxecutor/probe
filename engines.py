@@ -22,7 +22,7 @@ from x_client import XClient
 import llm
 import phoenix_scorer
 from state import (load_state, save_state, mark_replied, mark_quoted,
-                   mark_seen, is_new_tweet, already_engaged)
+                   mark_seen, is_new_tweet, already_engaged, is_within_window)
 
 log = logging.getLogger(__name__)
 
@@ -244,6 +244,96 @@ def run_reply_cycle(client, state, dry_run, max_replies=1) -> int:
 
 def run_quote_cycle(client, state, dry_run, max_quotes=1) -> int:
     return run_followed_cycle(client, state, dry_run, max_quotes, "quote")
+
+
+# Notification kinds that are a reply/mention targeting one of OUR posts and so
+# warrant a response. Aggregate kinds (likes, retweets, follow alerts) are skipped.
+REPLY_NOTIFICATION_KINDS = {
+    "user_replied_to_your_tweet",
+    "user_mentioned_you",
+}
+
+
+def _notification_candidates(client: XClient, state: dict) -> list:
+    """Replies/mentions on our own posts from the notification timeline.
+
+    Notifications embed the full tweet, so each candidate carries the reply
+    text, author, and a snowflake id. Dedup keys on the exact reply tweet id
+    (state["replied"]), so a re-run never answers the same reply twice, and an
+    age window keeps us from answering ancient threads."""
+    try:
+        notifs, _ = client.get_notifications(count=40)
+    except Exception as e:
+        log.warning("  get_notifications failed: %s", e)
+        return []
+    candidates = []
+    for n in notifs:
+        if n.get("element") not in REPLY_NOTIFICATION_KINDS:
+            continue
+        t = n.get("tweet")
+        if not t or not t.get("id_str"):
+            continue
+        if t.get("author_screen_name") == "elxecutor":
+            continue
+        if not is_within_window(t["id_str"]):
+            log.info("  skipping old reply %s (outside freshness window)",
+                     t["id_str"])
+            continue
+        if already_engaged(state, t["id_str"]):
+            continue
+        candidates.append(t)
+    return candidates
+
+
+def run_notification_cycle(client: XClient, state: dict, dry_run: bool,
+                           max_posts: int = 1) -> int:
+    """Respond to replies/mentions on our own posts (one reply per run).
+
+    The account currently only engages tweets from followed accounts; people who
+    reply to or mention it never get answered. This cycle reads the notification
+    timeline, picks a fresh, unanswered reply, generates a genuine response, runs
+    it through the same reply gates, and posts it as a reply to the original."""
+    candidates = _notification_candidates(client, state)
+    log.info("Fresh replies/mentions to answer: %d", len(candidates))
+    if not candidates:
+        return 0
+
+    posted = 0
+    for t in candidates:
+        if posted >= max_posts:
+            break
+        name = t.get("author_name", t.get("author_screen_name", ""))
+        bio = t.get("author_bio", "")
+        text = llm.generate_reply(t["full_text"], name, bio,
+                                  image_desc="", article="")
+        ok, block_line = _gate_text("reply", text, t["author_screen_name"])
+        if not ok:
+            # A gate-block here is a one-shot at a real person, so DON'T mark it
+            # answered: the reply stays eligible and a later run's fresh
+            # generation may pass. (Followed-account cycles mark to avoid
+            # re-picking; notifications intentionally differ.)
+            log.info(block_line)
+            continue
+
+        log.info("  REPLY to @%s on our post (reply %s): %s",
+                 t["author_screen_name"], t["id_str"], text)
+        if dry_run:
+            log.info("    [DRY RUN] would post")
+            posted += 1
+        else:
+            try:
+                new_id = client.create_tweet(text, reply_to_tweet_id=t["id_str"])
+                log.info("    posted reply to notification (tweet %s)", new_id)
+                mark_replied(state, t["id_str"], 0.0, text, dry_run)
+                posted += 1
+            except Exception as e:
+                log.error("    FAILED to post reply to notification: %s", e)
+        if posted >= max_posts:
+            break
+
+    save_state(state)
+    log.info("Notification cycle done: %d posted", posted)
+    return posted
 
 
 def _phoenix_top_niche_tweets(client: XClient, state: dict, count: int = 10) -> list:

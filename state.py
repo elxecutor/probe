@@ -27,6 +27,10 @@ _DEFAULT_STATE = {
     # Per-account heartbeat: account_id -> highest tweet id already seen.
     # Engines only gather tweets newer than this so old tweets never qualify.
     "heartbeat": {},
+    # Tweet ids the bot has already laid eyes on (notifications, replies/mentions
+    # on our own posts). Once seen, never responded to again — "only respond to
+    # stuff it hasn't seen" applies to the notification path too.
+    "viewed": {},
 }
 
 
@@ -141,3 +145,14 @@ def is_within_window(tweet_id, hours: int = FRESH_WINDOW_HOURS) -> bool:
     if not ts:
         return False
     return time.time() * 1000 - ts <= hours * 3600 * 1000
+
+
+def is_viewed(state, tweet_id) -> bool:
+    """True when the bot has already laid eyes on this tweet (notification path).
+    Once seen, it is never responded to again."""
+    return str(tweet_id) in state.get("viewed", {})
+
+
+def mark_viewed(state, tweet_id):
+    """Record that a notification tweet has been seen, so later runs skip it."""
+    state.setdefault("viewed", {})[str(tweet_id)] = time.time()

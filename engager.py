@@ -101,18 +101,6 @@ def _autopilot(args):
 # --- Preflight ---------------------------------------------------------------
 
 MIN_TEXT_LEN = 30
-TWEETS_PER_ACCOUNT = 3   # newest few is enough to detect "anything fresh"
-ACCOUNTS_PER_RUN = 24    # scan the whole follow list — preflight is cheap
-FRESH_ACCOUNTS_FILE = "fresh_accounts.txt"
-
-
-def _write_fresh_accounts(account_ids) -> None:
-    """Persist which accounts had fresh candidates so the engines can prioritize
-    them. The engines only sample a subset of followed accounts per run, so this
-    makes sure what preflight spotted is actually within reach of the engager."""
-    with open(FRESH_ACCOUNTS_FILE, "w") as f:
-        for acc in sorted(account_ids):
-            f.write(f"{acc}\n")
 
 
 def preflight():
@@ -124,42 +112,36 @@ def preflight():
     client = XClient()
     state = load_state()
 
-    following = {u["id_str"]: u for u in client.get_all_following()}
-    accounts = list(following.values())
-    random.shuffle(accounts)
-    accounts = accounts[:ACCOUNTS_PER_RUN]
+    # Candidates come from the home timeline (HomeLatestTimeline), so muted
+    # accounts never surface — exactly the same view the engines use.
+    try:
+        tweets, _ = client.get_timeline_paged(count=60, max_pages=3, page_size=40)
+    except Exception as e:
+        log.warning("  get_timeline_paged failed: %s", e)
+        tweets = []
 
     found = 0
-    fresh_ids = set()
-    for u in accounts:
-        try:
-            tweets, _ = client.get_user_tweets(u["id_str"], count=TWEETS_PER_ACCOUNT)
-        except Exception as e:
-            log.warning("  get_user_tweets(%s) failed: %s", u.get("screen_name"), e)
+    for t in tweets:
+        if t["author_screen_name"] == "elxecutor":
             continue
-        account_fresh = False
-        for t in tweets:
-            if t["author_screen_name"] == "elxecutor":
-                continue
-            if not is_new_tweet(state, u["id_str"], t["id_str"]):
-                continue
-            if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
-                continue
-            if already_engaged(state, t["id_str"]):
-                continue
-            account_fresh = True
-            found += 1
-            log.info("  fresh candidate: @%s %s %.60s",
-                     t["author_screen_name"], t["id_str"], t["full_text"])
-        if account_fresh:
-            fresh_ids.add(u["id_str"])
-        time.sleep(0.3)
+        if t.get("full_text", "").startswith("RT @"):  # retweet, not a target
+            continue
+        if not t.get("author_id"):
+            continue
+        if not is_new_tweet(state, t["author_id"], t["id_str"]):
+            continue
+        if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
+            continue
+        if already_engaged(state, t["id_str"]):
+            continue
+        found += 1
+        log.info("  fresh candidate: @%s %s %.60s",
+                 t["author_screen_name"], t["id_str"], t["full_text"])
         if found >= 5:
             break
-    _write_fresh_accounts(fresh_ids)
 
     # Also flag fresh replies/mentions on our own posts, so quiet runs that have
-    # nothing new from followed accounts still trigger the notification cycle.
+    # nothing new on the home timeline still trigger the notification cycle.
     notif_replyable = engines._notification_candidates(client, state)
     for t in notif_replyable[:3]:
         log.info("  fresh reply to answer: @%s %s %.60s",

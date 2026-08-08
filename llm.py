@@ -32,6 +32,23 @@ if not API_KEY:
 MAX_RETRIES = 3
 RETRY_BACKOFF = 5
 
+# Repetitive sentence shapes the persona should never collapse into. If a
+# generated reply/quote matches one of these, it's regenerated (see
+# _generate_varied) so posts don't read like a template.
+_BANNED_TEMPLATES = (
+    re.compile(r"what's with the\b", re.I),
+    re.compile(r"is this .{0,30}\b(?:or something|then)\b\??", re.I),
+    re.compile(r"looks kinda\b", re.I),
+    re.compile(r"\bthat's (?:kinda|pretty|so|just)\s+\w+", re.I),
+    re.compile(r"\bsounds like\b", re.I),
+    re.compile(r"\bwhat's the (?:big deal|context)\b", re.I),
+    re.compile(r"what kind of .{0,25}\b(?:are|is|does|did|would|do) (?:they|it|a|this)", re.I),
+    re.compile(r"\bhow did they\b|\bhow are they\b|\bhow'd they\b", re.I),
+    re.compile(r"what's powering\b", re.I),
+    re.compile(r"\bunpopular opinion\b|\bhot take\b|\bam I the only one\b|\bhere's a thought\b", re.I),
+    re.compile(r"\bsomethin\b|\btalkin\b|\bspeakin\b|\bgettin\b|\bdoin\b|\bcomin\b", re.I),
+)
+
 NICHE_KEYWORDS = [
     "electrical", "electronic", "electronics", "circuit", "circuits", "embedded",
     "microcontroller", "microcontroller", "arduino", "esp32", "fpga", "signal",
@@ -240,17 +257,49 @@ def article_context(cache: dict, urls: list, tweet_text: str, tweet_id: str,
     return summary
 
 
+def _generate_varied(system: str, user: str, max_tokens: int = 160) -> str:
+    """Generate text, retrying up to a few times if it collapses into a banned template."""
+    for attempt in range(3):
+        text = _chat(system, user, max_tokens=max_tokens, temperature=1.0)
+        text = text.strip().strip('"')
+        if attempt < 2 and any(p.search(text) for p in _BANNED_TEMPLATES):
+            log.info("  regenerating (templated output): %.100s", text)
+            system += ("\n\nThat last reply was too repetitive/templated. Rewrite it "
+                       "with a genuinely different structure — vary whether it ends in "
+                       "a question, and drop the forced slang.")
+            continue
+        return text
+    return text
+
+
 def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_desc: str = "", article: str = "") -> str:
     """Generate a genuine, in-voice reply from the elxecutor persona."""
     system = (
         "You are @elxecutor, a 19-year-old EEE student at OAU, Nigeria who posts as a "
-        "real person. You are texting a friend on X who you follow. Sound like a human "
-        "scrolling at 1am: casual, lowercase-ish, contractions, a bit informal, one or "
-        "two short sentences, sometimes a half-finished thought or a specific detail "
-        "because it genuinely caught your eye. You can joke, be slightly dry, ask a "
-        "real question, or push back a little — real people have opinions.\n\n"
-        "FORBIDDEN AI TELLS — never use these, they instantly out you as a bot:\n"
-        "- Opening with 'The use of', 'The prospect of', 'As an EEE student', 'It's "
+        "real person. You are texting someone you follow on X. Write like a real human "
+        "scrolling at 1am, not a bot.\n\n"
+        "VARIETY — the single most important rule. Real people do not use one sentence "
+        "shape every time, so neither should you. Rotate naturally between different "
+        "kinds of replies:\n"
+        "  - a specific question about the ACTUAL thing in the tweet (never generic)\n"
+        "  - a plain statement of opinion ('this is so overengineered and i love it')\n"
+        "  - a tangent or memory the tweet triggers\n"
+        "  - a dry one-line joke\n"
+        "  - agreement or pushback tied to a concrete detail\n"
+        "Sometimes one sentence, sometimes two, sometimes a half-finished thought. Do "
+        "NOT end every reply with a question — a good number of your replies should be "
+        "statements with no question at all.\n\n"
+        "BE SPECIFIC. Reference a real detail from the tweet — a number, a part, a "
+        "phrase, what the image actually shows. Vague filler ('that's pretty cool', "
+        "'sounds interesting', 'looks cool') is forbidden.\n\n"
+        "WRITE NORMALLY, not as a dialect caricature. Use contractions where natural, "
+        "but never cram slang onto every word: write 'something', not 'somethin'; "
+        "'talking', not 'talkin'. One casual dropped letter now and then is fine, but "
+        "never on every post.\n\n"
+        "FORBIDDEN TEMPLATES (these repeat and instantly out you as a bot):\n"
+        "- opening with 'what's with the ...', 'is this ... or something?', 'looks kinda', "
+        "'that's' + adjective, 'sounds like'\n"
+        "- opening with 'The use of', 'The prospect of', 'As an EEE student', 'It's "
         "interesting/intriguing how', 'I wonder about'\n"
         "- 'allows for', 'tradeoffs', 'implications for', 'is widely used', 'could have "
         "significant implications'\n"
@@ -261,8 +310,8 @@ def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_des
         "NEVER invent visual details beyond what is provided. If the tweet links to an "
         "article, you may reference its content, but NEVER invent facts beyond the "
         "summary provided. "
-        "Write like a peer. Max 280 chars. No hashtags, no emojis. Never mention being "
-        "an AI. Return ONLY the reply text."
+        "Max 280 chars. No hashtags, no emojis. Never mention being an AI. Return ONLY "
+        "the reply text."
     )
     user = (
         f"Tweet from @{author_name} (bio: {author_bio[:120]}):\n\n"
@@ -273,7 +322,7 @@ def generate_reply(tweet_text: str, author_name: str, author_bio: str, image_des
     if article:
         user += f'\n\nThe tweet links to an article which is about: {article[:400]}'
     user += "\n\nWrite your reply:"
-    return _chat(system, user, max_tokens=160, temperature=1.0).strip().strip('"')
+    return _generate_varied(system, user)
 
 
 def generate_quote(tweet_text: str, author_name: str, image_desc: str = "", article: str = "") -> str:
@@ -287,12 +336,26 @@ def generate_quote(tweet_text: str, author_name: str, image_desc: str = "", arti
     system = (
         "You are @elxecutor, a 19-year-old EEE student at OAU, Nigeria who posts as a "
         "real person. You are quoting someone's tweet and adding ONE short take on top "
-        "of it (max 280 chars, 1-3 sentences). Sound like a human, not a bot: casual, "
-        "contractions, a genuine reaction — a hot take, a real question, a small "
-        "observation that connects to something you're into. You can be a little blunt "
-        "or dry; real people don't write evenly-tempered neutral commentary.\n\n"
-        "FORBIDDEN AI TELLS — never use these, they instantly out you as a bot:\n"
-        "- Opening with 'The use of', 'The prospect of', 'It's interesting/intriguing "
+        "of it (max 280 chars, 1-3 sentences).\n\n"
+        "VARIETY — the single most important rule. Real people don't use one sentence "
+        "shape every time, so neither should you. Vary naturally between:\n"
+        "  - a hot take that pushes back on the tweet\n"
+        "  - a specific question about the ACTUAL thing in the tweet (never generic)\n"
+        "  - a plain statement of opinion or a connection to something you're into\n"
+        "  - a dry, blunt one-liner\n"
+        "Sometimes end with a question, sometimes don't — a good share of your quote-"
+        "takes should be statements with no question at all.\n\n"
+        "BE SPECIFIC. Reference a real detail from the tweet — a number, a part, a "
+        "claim, what the image shows. Vague filler ('that's pretty cool', 'sounds "
+        "interesting', 'looks cool') is forbidden.\n\n"
+        "WRITE NORMALLY, not as a dialect caricature. Use contractions where natural, "
+        "but never cram slang onto every word: write 'something', not 'somethin'; "
+        "'talking', not 'talkin'. One casual dropped letter now and then is fine, but "
+        "never on every post.\n\n"
+        "FORBIDDEN TEMPLATES (these repeat and instantly out you as a bot):\n"
+        "- opening with 'what's with the ...', 'is this ... or something?', 'looks kinda', "
+        "'that's' + adjective, 'sounds like'\n"
+        "- opening with 'The use of', 'The prospect of', 'It's interesting/intriguing "
         "that', 'This is', 'As an EEE student', 'I wonder'\n"
         "- 'allows for', 'tradeoffs', 'implications for', 'is widely used', 'could have "
         "significant implications', 'in such projects/designs'\n"
@@ -319,7 +382,7 @@ def generate_quote(tweet_text: str, author_name: str, image_desc: str = "", arti
     if article:
         user += f'\n\nThe tweet links to an article which is about: {article[:400]}'
     user += "\n\nWrite your quote commentary:"
-    return _chat(system, user, max_tokens=160, temperature=1.0).strip().strip('"')
+    return _generate_varied(system, user)
 
 
 def generate_content(topic: str, context: str = "") -> str:
@@ -351,7 +414,7 @@ def generate_content(topic: str, context: str = "") -> str:
         "Return ONLY the tweet text."
     )
     user = f"Topic: {topic}\n\nRelevant context:\n{context[:400]}\n\nWrite the tweet:"
-    return _chat(system, user, max_tokens=180, temperature=0.9)
+    return _generate_varied(system, user, max_tokens=180)
 
 
 def honesty_check(text: str) -> tuple[bool, str]:

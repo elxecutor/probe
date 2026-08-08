@@ -47,6 +47,10 @@ on:
         description: "Start from empty state (ignore last run's heartbeats/caps)"
         type: boolean
         default: false
+      floor_notifications:
+        description: "Stamp notification floor at now, then stop (ignore all present replies)"
+        type: boolean
+        default: false
 
 env:
   # Set to "false" once you want scheduled runs to post. Manual runs can override
@@ -109,29 +113,40 @@ jobs:
           GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
           EOF
 
+      # Stamp the notification floor and stop: leaves ALL present replies/mentions
+      # alone (at or below the floor). Runs in CI so the floor lands in state.json
+      # and survives the artifact round-trip — stamping locally is useless because
+      # state.json is git-ignored and CI restores the previous run's copy.
+      - name: Stamp notification floor
+        if: ${{ inputs.floor_notifications }}
+        run: |
+          export PYTHONPATH="$PWD"
+          python engager.py --floor-notifications
+
       # Cheap scan before the heavy steps: only bother with Phoenix + the model
       # (and posting) when there is genuinely something fresh to respond to.
       - name: Preflight (fresh candidates?)
         id: preflight
+        if: ${{ inputs.floor_notifications != true }}
         run: |
           export PYTHONPATH="$PWD"
           python engager.py --preflight
           echo "has_candidates=$(cat preflight.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Install Phoenix deps
-        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true'
+        if: ${{ inputs.floor_notifications != true && steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true' }}
         run: pip install jax==0.8.1 jaxlib==0.8.1 dm-haiku==0.0.17 scipy tabulate
 
       - name: Cache Phoenix ranker artifacts
         id: phoenix-cache
-        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true'
+        if: ${{ inputs.floor_notifications != true && steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true' }}
         uses: actions/cache@v4
         with:
           path: x-algorithm/phoenix/artifacts/oss-phoenix-artifacts/ranker
           key: phoenix-ranker-v1
 
       - name: Fetch Phoenix ranker artifacts
-        if: steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true' && steps.phoenix-cache.outputs.cache-hit != 'true'
+        if: ${{ inputs.floor_notifications != true && steps.preflight.outputs.has_candidates == '1' && env.USE_PHOENIX == 'true' && steps.phoenix-cache.outputs.cache-hit != 'true' }}
         run: |
           mkdir -p /tmp/phoenix /tmp/phoenix-artifacts
           curl -sL -o /tmp/phoenix/oss-phoenix-artifacts.zip \
@@ -155,7 +170,7 @@ jobs:
           echo "dry=$dry" >> "$GITHUB_OUTPUT"
 
       - name: Run autopilot
-        if: steps.preflight.outputs.has_candidates == '1'
+        if: ${{ inputs.floor_notifications != true && steps.preflight.outputs.has_candidates == '1' }}
         run: |
           export PYTHONPATH="$PWD"
           if [ "$USE_PHOENIX" = "true" ]; then
@@ -164,7 +179,7 @@ jobs:
           python engager.py --once ${{ steps.flags.outputs.dry }}
 
       - name: No fresh candidates — skipping
-        if: steps.preflight.outputs.has_candidates != '1'
+        if: ${{ inputs.floor_notifications != true && steps.preflight.outputs.has_candidates != '1' }}
         run: echo "No fresh tweets from followed accounts; skipping model load and posting."
 
       - name: Sanitize state.json for artifact

@@ -23,7 +23,7 @@ import llm
 import phoenix_scorer
 from state import (load_state, save_state, mark_replied, mark_quoted,
                    mark_seen, is_new_tweet, already_engaged, is_within_window,
-                   is_viewed, mark_viewed)
+                   is_viewed, mark_viewed, is_above_notification_floor)
 
 log = logging.getLogger(__name__)
 
@@ -247,7 +247,9 @@ def _notification_candidates(client: XClient, state: dict) -> list:
     Notifications embed the full tweet, so each candidate carries the reply
     text, author, and a snowflake id. Dedup keys on the exact reply tweet id
     (state["replied"]), so a re-run never answers the same reply twice, and an
-    age window keeps us from answering ancient threads."""
+    age window keeps us from answering ancient threads. The notification floor
+    (state["notification_floor"]) lets the owner stamp a baseline so the bot
+    leaves all present notifications alone and only answers future ones."""
     try:
         notifs, _ = client.get_notifications(count=40)
     except Exception as e:
@@ -261,6 +263,10 @@ def _notification_candidates(client: XClient, state: dict) -> list:
         if not t or not t.get("id_str"):
             continue
         if t.get("author_screen_name") == "elxecutor":
+            continue
+        if not is_above_notification_floor(state, n.get("timestamp")):
+            log.info("  skipping present reply %s (at or below notification floor)",
+                     t["id_str"])
             continue
         if not is_within_window(t["id_str"]):
             log.info("  skipping old reply %s (outside freshness window)",

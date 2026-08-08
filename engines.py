@@ -43,6 +43,31 @@ def _is_retweet(t: dict) -> bool:
     return t.get("full_text", "").startswith("RT @")
 
 
+def _filter_candidates(tweets, state):
+    """Apply the shared freshness/eligibility filters to a tweet list.
+
+    Pure: no heartbeats advanced, no caps applied. Both the home-timeline
+    engine and the CI preflight use this, then layer caps / heartbeat
+    advancement on top as needed."""
+    candidates = []
+    for t in tweets:
+        if t["author_screen_name"] == "elxecutor":
+            continue
+        if _is_retweet(t):
+            continue
+        author = t.get("author_id", "")
+        if not author:
+            continue
+        if not is_new_tweet(state, author, t["id_str"]):
+            continue
+        if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
+            continue
+        if already_engaged(state, t["id_str"]):
+            continue
+        candidates.append(t)
+    return candidates
+
+
 def _resolve_article_text(client: XClient, t: dict) -> str:
     """Return the tweet's article body, fetching it on demand when needed.
 
@@ -78,20 +103,8 @@ def _gather_followed_candidates(client: XClient, state: dict) -> list:
 
     candidates = []
     seen_authors = {}
-    for t in tweets:
-        if t["author_screen_name"] == "elxecutor":
-            continue
-        if _is_retweet(t):
-            continue
+    for t in _filter_candidates(tweets, state):
         author = t.get("author_id", "")
-        if not author:
-            continue
-        if not is_new_tweet(state, author, t["id_str"]):
-            continue
-        if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
-            continue
-        if already_engaged(state, t["id_str"]):
-            continue
         if seen_authors.get(author, 0) >= MAX_PER_AUTHOR:
             continue
         seen_authors[author] = seen_authors.get(author, 0) + 1

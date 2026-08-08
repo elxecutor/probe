@@ -36,7 +36,7 @@ load_dotenv()
 from x_client import XClient  # noqa: E402
 import engines  # noqa: E402
 import llm  # noqa: E402
-from state import load_state, save_state, roll_daily, is_new_tweet, already_engaged  # noqa: E402
+from state import load_state, save_state, roll_daily  # noqa: E402
 
 log = logging.getLogger("engager")
 
@@ -52,34 +52,27 @@ def _autopilot(args):
         save_state(state)
 
         engine = state.get("next_engine", "reply")
-        replies_cap_left = state["replies_today"] < args.daily_reply_cap
-        quotes_cap_left = state["content_today"] < args.daily_quote_cap
+        replies_left = state["replies_today"] < args.daily_reply_cap
+        quotes_left = state["content_today"] < args.daily_quote_cap
 
         # Notifications first: answering people who replied to/mentioned our own
         # posts is the highest-signal engagement, so it takes the one-post slot
         # for this run when there's anything fresh and unanswered.
-        if replies_cap_left:
-            posted = engines.run_notification_cycle(
-                client, state, args.dry_run, 1)
+        if replies_left:
+            posted = engines.run_notification_cycle(client, state, args.dry_run, 1)
             if posted:
                 state["replies_today"] += posted
-                # Alternate next run's engine so replies/quotes stay mixed.
                 state["next_engine"] = "quote" if engine == "reply" else "reply"
                 save_state(state)
                 return
 
-        if engine == "reply" and replies_cap_left:
-            state["replies_today"] += engines.run_reply_cycle(
-                client, state, args.dry_run, 1)
-        elif engine == "quote" and quotes_cap_left:
-            state["content_today"] += engines.run_quote_cycle(
-                client, state, args.dry_run, 1)
-        elif quotes_cap_left:
-            state["content_today"] += engines.run_quote_cycle(
-                client, state, args.dry_run, 1)
-        elif replies_cap_left:
-            state["replies_today"] += engines.run_reply_cycle(
-                client, state, args.dry_run, 1)
+        # Prefer the alternated engine; fall back to whichever cap still has room.
+        if engine == "reply" and replies_left:
+            state["replies_today"] += engines.run_reply_cycle(client, state, args.dry_run, 1)
+        elif quotes_left:
+            state["content_today"] += engines.run_quote_cycle(client, state, args.dry_run, 1)
+        elif replies_left:
+            state["replies_today"] += engines.run_reply_cycle(client, state, args.dry_run, 1)
         else:
             log.info("Both daily caps reached (%d replies / %d quotes).",
                      args.daily_reply_cap, args.daily_quote_cap)
@@ -102,8 +95,6 @@ def _autopilot(args):
 
 # --- Preflight ---------------------------------------------------------------
 
-MIN_TEXT_LEN = 30
-
 
 def preflight():
     """Lightweight fresh-candidate scan for the workflow, run BEFORE the heavy
@@ -115,7 +106,8 @@ def preflight():
     state = load_state()
 
     # Candidates come from the home timeline (HomeLatestTimeline), so muted
-    # accounts never surface — exactly the same view the engines use.
+    # accounts never surface — exactly the same view the engines use. Reuse the
+    # engine's filter (read-only: no heartbeat advance) so the two never drift.
     try:
         tweets, _ = client.get_timeline_paged(count=60, max_pages=3, page_size=40)
     except Exception as e:
@@ -123,19 +115,7 @@ def preflight():
         tweets = []
 
     found = 0
-    for t in tweets:
-        if t["author_screen_name"] == "elxecutor":
-            continue
-        if t.get("full_text", "").startswith("RT @"):  # retweet, not a target
-            continue
-        if not t.get("author_id"):
-            continue
-        if not is_new_tweet(state, t["author_id"], t["id_str"]):
-            continue
-        if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
-            continue
-        if already_engaged(state, t["id_str"]):
-            continue
+    for t in engines._filter_candidates(tweets, state):
         found += 1
         log.info("  fresh candidate: @%s %s %.60s",
                  t["author_screen_name"], t["id_str"], t["full_text"])

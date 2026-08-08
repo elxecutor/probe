@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """Engines for the elxecutor autopilot: reply, quote, and original content.
 
-Reply and quote cycles gather fresh tweets from followed accounts, rank them
-(Phoenix model, falling back to a raw engagement heuristic), generate a genuine
-post, and post ONE per run. The content cycle turns trending niche topics into
-original tweets and is a standalone tool (NOT wired into the autopilot loop —
-original personal tweets are handled manually by the owner).
+Reply and quote cycles gather fresh tweets from the account's home timeline,
+rank them (Phoenix model, falling back to a raw engagement heuristic),
+generate a genuine post, and post ONE per run. The content cycle turns trending
+niche topics into original tweets and is a standalone tool (NOT wired into the
+autopilot loop — original personal tweets are handled manually by the owner).
 
-All cycles read/write the same state.json (dedup logs + daily caps) and share the
-candidate-gathering machinery: a rotating sample of followed accounts, a
-per-account heartbeat that only admits tweets newer than the last sighting, and
-priority for accounts preflight flagged as holding fresh candidates.
+Candidates come from the home feed (HomeLatestTimeline), which by design never
+surfaces muted accounts' tweets — so muting an account on X is a real
+off-switch for the autopilot. All cycles read/write the same state.json (dedup
+logs + daily caps) and share a per-author heartbeat that only admits tweets
+newer than the last sighting.
 """
 
 import argparse
 import logging
-import random
 import time
 
 from x_client import XClient
@@ -29,10 +29,17 @@ log = logging.getLogger(__name__)
 _ARTICLE_LINK = "/i/article/"
 
 MIN_TEXT_LEN = 30
-ACCOUNTS_PER_RUN = 10   # rotate through followed accounts so no single one dominates
-TWEETS_PER_ACCOUNT = 5
+MAX_PER_AUTHOR = 3   # keep a prolific account from dominating the candidate pool
 MAX_CANDIDATES = 30
-FRESH_ACCOUNTS_FILE = "fresh_accounts.txt"   # written by engager.py --preflight
+
+
+def _is_retweet(t: dict) -> bool:
+    """True when a home-timeline entry is a retweet.
+
+    HomeLatestTimeline normalizes retweets with the retweeter as author and an
+    "RT @..." full_text; replying to/quoting those is pointless, so engines and
+    preflight skip them."""
+    return t.get("full_text", "").startswith("RT @")
 
 
 def _resolve_article_text(client: XClient, t: dict) -> str:
@@ -51,67 +58,50 @@ def _resolve_article_text(client: XClient, t: dict) -> str:
     return ""
 
 
-def _prioritized_accounts(following: list) -> list:
-    """Order followed accounts so preflight-flagged ones are scanned first.
+def _gather_followed_candidates(client: XClient, state: dict) -> list:
+    """Collect recent tweets from the account's home timeline.
 
-    Preflight scans the whole follow list and records which accounts hold fresh
-    candidates; the engines only sample a subset per run. Putting those accounts
-    first means what preflight spotted is actually within reach — the random
-    sample then fills the rest of the budget."""
-    fresh = set()
-    try:
-        with open(FRESH_ACCOUNTS_FILE) as f:
-            fresh = {line.strip() for line in f if line.strip()}
-    except FileNotFoundError:
-        pass
-    if not fresh:
-        return following
-    priority = [u for u in following if u["id_str"] in fresh]
-    rest = [u for u in following if u["id_str"] not in fresh]
-    random.shuffle(rest)
-    return priority + rest
-
-
-def _gather_followed_candidates(client: XClient, following: dict, state: dict) -> list:
-    """Collect recent tweets from a rotating sample of followed accounts.
-
-    Fetching each account's own timeline (instead of the flooded home timeline)
-    keeps the candidate pool spread across all followed accounts, so a prolific
-    account like hackaday can't dominate every cycle.
-
-    A per-account heartbeat (highest tweet id already seen, persisted in
-    state.json) means only tweets newer than the last sighting qualify — old
-    tweets never resurface even if the account goes quiet.
+    Reading the home feed (HomeLatestTimeline) instead of each followed account's
+    own timeline means muted accounts are naturally excluded — X never returns
+    their tweets in the feed, so muting an account is a real off-switch for the
+    autopilot. The same per-author heartbeat (highest tweet id already seen,
+    persisted in state.json) still applies: only tweets newer than the last
+    sighting qualify, and a per-author cap keeps any single account from
+    dominating the candidate pool.
     """
-    accounts = list(following.values())
-    random.shuffle(accounts)
-    accounts = _prioritized_accounts(accounts)
-    accounts = accounts[:ACCOUNTS_PER_RUN]
+    try:
+        tweets, _ = client.get_timeline_paged(count=60, max_pages=3, page_size=40)
+    except Exception as e:
+        log.warning("  get_timeline_paged failed: %s", e)
+        return []
 
     candidates = []
-    for u in accounts:
-        try:
-            tweets, _ = client.get_user_tweets(u["id_str"], count=TWEETS_PER_ACCOUNT)
-        except Exception as e:
-            log.warning("  get_user_tweets(%s) failed: %s", u.get("screen_name"), e)
+    seen_authors = {}
+    for t in tweets:
+        if t["author_screen_name"] == "elxecutor":
             continue
-        for t in tweets:
-            if t["author_screen_name"] == "elxecutor":
-                continue
-            if not is_new_tweet(state, u["id_str"], t["id_str"]):
-                continue
-            if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
-                continue
-            if already_engaged(state, t["id_str"]):
-                continue
-            candidates.append(t)
-            if len(candidates) >= MAX_CANDIDATES:
-                break
-        for t in tweets:
-            mark_seen(state, u["id_str"], t["id_str"])
-        time.sleep(0.8)
+        if _is_retweet(t):
+            continue
+        author = t.get("author_id", "")
+        if not author:
+            continue
+        if not is_new_tweet(state, author, t["id_str"]):
+            continue
+        if len(t["full_text"]) < MIN_TEXT_LEN and not t.get("article_text"):
+            continue
+        if already_engaged(state, t["id_str"]):
+            continue
+        if seen_authors.get(author, 0) >= MAX_PER_AUTHOR:
+            continue
+        seen_authors[author] = seen_authors.get(author, 0) + 1
+        candidates.append(t)
         if len(candidates) >= MAX_CANDIDATES:
             break
+    # Advance heartbeats for everything seen so old tweets never resurface.
+    for t in tweets:
+        author = t.get("author_id", "")
+        if author:
+            mark_seen(state, author, t["id_str"])
     return candidates
 
 
@@ -163,14 +153,11 @@ def _gate_text(mode, text, target):
 
 def run_followed_cycle(client: XClient, state: dict, dry_run: bool,
                        max_posts: int, mode: str) -> int:
-    """Pick the single best reply/quote candidate from followed accounts and post it.
+    """Pick the single best reply/quote candidate from the home timeline and post it.
 
     mode: "reply" or "quote". Shared by both — the only differences are the
     generation prompt, the safety/algorithm gates, and how the post is made."""
-    following = {u["id_str"]: u for u in client.get_all_following()}
-    log.info("Following pool: %d accounts", len(following))
-
-    candidates = _gather_followed_candidates(client, following, state)
+    candidates = _gather_followed_candidates(client, state)
     log.info("Fresh candidate tweets to %s: %d", mode, len(candidates))
 
     if not candidates:
@@ -184,9 +171,8 @@ def run_followed_cycle(client: XClient, state: dict, dry_run: bool,
         if posted >= max_posts:
             break
         score = t.get("phoenix", {}).get("weighted", 0.0)
-        author = following.get(t["author_id"], {})
-        bio = author.get("description", "")
-        name = author.get("name", t["author_screen_name"])
+        bio = t.get("author_bio", "")
+        name = t.get("author_name", t["author_screen_name"])
         media_url = ""
         if t.get("media"):
             media_url = t["media"][0].get("url", "")

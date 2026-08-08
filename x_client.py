@@ -418,6 +418,7 @@ class XClient:
             "author_id": user_result.get("rest_id", ""),
             "author_screen_name": user_core.get("screen_name", ""),
             "author_name": user_core.get("name", ""),
+            "author_bio": user_result.get("profile_bio", {}).get("description", ""),
             "favorite_count": legacy.get("favorite_count", 0),
             "retweet_count": legacy.get("retweet_count", 0),
             "reply_count": legacy.get("reply_count", 0),
@@ -464,6 +465,15 @@ class XClient:
         return tweets, cursor
 
     def get_notifications(self, count=20, cursor=None):
+        """Return (notifs, next_cursor). Each notif is a dict with:
+          - id, element (notification kind, e.g. user_replied_to_your_tweet)
+          - url, message, timestamp, tweet_id
+          - tweet: normalized tweet for reply/mention notifications (else None)
+
+        The reply/mention tweet is embedded directly in the entry
+        (itemContent.tweet_results.result), so we can reply to it without a
+        follow-up fetch.
+        """
         variables = {"timeline_type": "All", "count": min(count, 40)}
         if cursor:
             variables["cursor"] = cursor
@@ -489,21 +499,42 @@ class XClient:
                     if content.get("__typename") != "TimelineTimelineItem":
                         continue
                     item = content.get("itemContent", {})
+                    element = (content.get("clientEventInfo") or {}).get("element", "")
+                    # Reply/mention notifications embed the full tweet.
+                    if item.get("__typename") == "TimelineTweet":
+                        tweet_result = item.get("tweet_results", {}).get("result", {})
+                        if not tweet_result or tweet_result.get("__typename") != "Tweet":
+                            continue
+                        t = self._normalize_tweet(tweet_result)
+                        if not t.get("id_str"):
+                            continue
+                        notifs.append({
+                            "id": entry.get("entryId", ""),
+                            "element": element,
+                            "url": (f"https://x.com/{t['author_screen_name']}/status/{t['id_str']}"),
+                            "message": element.replace("_", " "),
+                            "timestamp": entry.get("sortIndex", ""),
+                            "tweet_id": t["id_str"],
+                            "tweet": t,
+                        })
+                        continue
                     if item.get("__typename") != "TimelineNotification":
                         continue
                     notif = {
                         "id": item.get("id", ""),
+                        "element": element,
                         "icon": item.get("notification_icon", ""),
                         "url": item.get("notification_url", {}).get("url", ""),
                         "message": item.get("rich_message", {}).get("text", ""),
                         "template_type": item.get("template", {}).get("__typename", ""),
                         "timestamp": entry.get("sortIndex", ""),
+                        "tweet_id": None,
+                        "tweet": None,
                     }
-                    # Extract tweet ID from URL
+                    # Aggregate notifications (likes/retweets) may still carry a
+                    # status URL; extract the id when present.
                     if "/status/" in notif["url"]:
                         notif["tweet_id"] = notif["url"].split("/status/")[-1].split("?")[0]
-                    else:
-                        notif["tweet_id"] = None
                     notifs.append(notif)
         return notifs, next_cursor
 

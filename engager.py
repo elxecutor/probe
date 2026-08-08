@@ -53,6 +53,19 @@ def _autopilot(args):
         replies_cap_left = state["replies_today"] < args.daily_reply_cap
         quotes_cap_left = state["content_today"] < args.daily_quote_cap
 
+        # Notifications first: answering people who replied to/mentioned our own
+        # posts is the highest-signal engagement, so it takes the one-post slot
+        # for this run when there's anything fresh and unanswered.
+        if replies_cap_left:
+            posted = engines.run_notification_cycle(
+                client, state, args.dry_run, 1)
+            if posted:
+                state["replies_today"] += posted
+                # Alternate next run's engine so replies/quotes stay mixed.
+                state["next_engine"] = "quote" if engine == "reply" else "reply"
+                save_state(state)
+                return
+
         if engine == "reply" and replies_cap_left:
             state["replies_today"] += engines.run_reply_cycle(
                 client, state, args.dry_run, 1)
@@ -145,7 +158,14 @@ def preflight():
             break
     _write_fresh_accounts(fresh_ids)
 
-    ok = found > 0
+    # Also flag fresh replies/mentions on our own posts, so quiet runs that have
+    # nothing new from followed accounts still trigger the notification cycle.
+    notif_replyable = engines._notification_candidates(client, state)
+    for t in notif_replyable[:3]:
+        log.info("  fresh reply to answer: @%s %s %.60s",
+                 t["author_screen_name"], t["id_str"], t["full_text"])
+
+    ok = found > 0 or bool(notif_replyable)
     print(f"has_candidates={'1' if ok else '0'}")
     with open("preflight.txt", "w") as f:
         f.write("1" if ok else "0")

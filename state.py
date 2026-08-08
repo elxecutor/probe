@@ -129,3 +129,15 @@ def is_new_tweet(state, account_id, tweet_id) -> bool:
         return False
     age_ms = time.time() * 1000 - ts
     return age_ms <= FRESH_WINDOW_HOURS * 3600 * 1000
+
+
+def is_within_window(tweet_id, hours: int = FRESH_WINDOW_HOURS) -> bool:
+    """True when a tweet id is recent enough to act on (no per-account heartbeat).
+
+    Notifications (replies/mentions on our own posts) aren't tied to a followed
+    account's heartbeat, so this age check is the only freshness gate. Only the
+    exact reply tweet ids are ever stored, so a re-run simply skips them."""
+    ts = _tweet_ts_ms(tweet_id)
+    if not ts:
+        return False
+    return time.time() * 1000 - ts <= hours * 3600 * 1000

@@ -22,7 +22,8 @@ from x_client import XClient
 import llm
 import phoenix_scorer
 from state import (load_state, save_state, mark_replied, mark_quoted,
-                   mark_seen, is_new_tweet, already_engaged, is_within_window)
+                   mark_seen, is_new_tweet, already_engaged, is_within_window,
+                   is_viewed, mark_viewed)
 
 log = logging.getLogger(__name__)
 
@@ -265,6 +266,8 @@ def _notification_candidates(client: XClient, state: dict) -> list:
             log.info("  skipping old reply %s (outside freshness window)",
                      t["id_str"])
             continue
+        if is_viewed(state, t["id_str"]):
+            continue
         if already_engaged(state, t["id_str"]):
             continue
         candidates.append(t)
@@ -288,16 +291,15 @@ def run_notification_cycle(client: XClient, state: dict, dry_run: bool,
     for t in candidates:
         if posted >= max_posts:
             break
+        mark_viewed(state, t["id_str"])
         name = t.get("author_name", t.get("author_screen_name", ""))
         bio = t.get("author_bio", "")
         text = llm.generate_reply(t["full_text"], name, bio,
                                   image_desc="", article="")
         ok, block_line = _gate_text("reply", text, t["author_screen_name"])
         if not ok:
-            # A gate-block here is a one-shot at a real person, so DON'T mark it
-            # answered: the reply stays eligible and a later run's fresh
-            # generation may pass. (Followed-account cycles mark to avoid
-            # re-picking; notifications intentionally differ.)
+            # Marked viewed above: a reply is only ever answered once, so a
+            # gate-block here consumes it rather than re-picking every run.
             log.info(block_line)
             continue
 

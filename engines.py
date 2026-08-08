@@ -261,7 +261,11 @@ def _notification_candidates(client: XClient, state: dict) -> list:
     text, author, and a snowflake id. Dedup keys on the exact reply tweet id
     (state["replied"]), so a re-run never answers the same reply twice, and an
     age window keeps us from answering ancient threads."""
-    notifs, _ = client.get_notifications(count=40)
+    try:
+        notifs, _ = client.get_notifications(count=40)
+    except Exception as e:
+        log.warning("  get_notifications failed: %s", e)
+        return []
     candidates = []
     for n in notifs:
         if n.get("element") not in REPLY_NOTIFICATION_KINDS:
@@ -304,16 +308,17 @@ def run_notification_cycle(client: XClient, state: dict, dry_run: bool,
                                   image_desc="", article="")
         ok, block_line = _gate_text("reply", text, t["author_screen_name"])
         if not ok:
+            # A gate-block here is a one-shot at a real person, so DON'T mark it
+            # answered: the reply stays eligible and a later run's fresh
+            # generation may pass. (Followed-account cycles mark to avoid
+            # re-picking; notifications intentionally differ.)
             log.info(block_line)
-            mark_replied(state, t["id_str"], 0.0, text, dry_run)
-            save_state(state)
             continue
 
         log.info("  REPLY to @%s on our post (reply %s): %s",
                  t["author_screen_name"], t["id_str"], text)
         if dry_run:
             log.info("    [DRY RUN] would post")
-            mark_replied(state, t["id_str"], 0.0, text, dry_run)
             posted += 1
         else:
             try:
